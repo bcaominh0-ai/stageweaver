@@ -66,6 +66,9 @@ EXEC_SYSTEM_PROMPT = (
     "tools via function calling if needed. Always think step by step but reply\n"
     "with the minimal content needed for the meta-planner. If you must call a\n"
     "tool, produce the appropriate function call instead of natural language.\n"
+    "If the current evidence is insufficient for the executor task, use an\n"
+    "appropriate available MCP tool before finalizing. Follow the current tool\n"
+    "schema; memory examples are not tool constraints.\n"
     "When done, output a concise result. Do NOT output FINAL ANSWER."
 )
 

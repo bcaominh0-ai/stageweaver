@@ -33,6 +33,24 @@ class ExecutorStateBuilderTests(unittest.TestCase):
         self.assertIn("[PARTIAL_RESULT]", state)
         self.assertLessEqual(len(state), 900)
 
+    def test_executor_state_does_not_include_need_next_instruction(self) -> None:
+        state = build_executor_current_state(
+            task_description="Find the nationality of a person.",
+            tool_history=[],
+            latest_observation="",
+            failed_calls=[],
+            repeated_calls=[],
+            partial_result="",
+        )
+
+        self.assertNotIn("[NEED_NEXT]", state)
+        self.assertNotIn("search again, crawl, extract, verify, or finish", state)
+        self.assertIn("[EXECUTOR_TASK]", state)
+        self.assertIn("[CALLED_TOOLS]", state)
+        self.assertIn("[LATEST_OBSERVATION]", state)
+        self.assertIn("[FAILURE_OR_AMBIGUITY]", state)
+        self.assertIn("[PARTIAL_RESULT]", state)
+
 
 if __name__ == "__main__":
     unittest.main()

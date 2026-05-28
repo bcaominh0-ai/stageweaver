@@ -190,9 +190,6 @@ def build_executor_current_state(
             "",
             "[PARTIAL_RESULT]",
             _compact_line(partial_result, 800) or "[NONE]",
-            "",
-            "[NEED_NEXT]",
-            "Decide whether to search again, crawl, extract, verify, or finish.",
         ]
     )
     rendered = "\n".join(parts).strip()
