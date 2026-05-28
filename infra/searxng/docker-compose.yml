@@ -1,0 +1,17 @@
+services:
+  searxng:
+    image: ghcr.io/searxng/searxng:latest
+    container_name: stageweaver-searxng
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - BASE_URL=http://127.0.0.1:8080/
+      - INSTANCE_NAME=stageweaver-local
+      - http_proxy=http://127.0.0.1:7891
+      - https_proxy=http://127.0.0.1:7891
+      - HTTP_PROXY=http://127.0.0.1:7891
+      - HTTPS_PROXY=http://127.0.0.1:7891
+      - ALL_PROXY=http://127.0.0.1:7891
+      - all_proxy=http://127.0.0.1:7891
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro

@@ -1,0 +1,56 @@
+{
+  "input_jsonl": "data/deepresearcher.jsonl",
+  "seed": 42,
+  "train_frac": 0.8,
+  "seen_sources": [
+    "nq",
+    "tq",
+    "hotpotqa",
+    "2wiki"
+  ],
+  "ood_sources": [
+    "musique",
+    "bamboogle",
+    "popqa"
+  ],
+  "splits": {
+    "seen_train": {
+      "rows": 1636,
+      "by_source": {
+        "2wiki": 409,
+        "hotpotqa": 409,
+        "nq": 409,
+        "tq": 409
+      }
+    },
+    "seen_dev": {
+      "rows": 412,
+      "by_source": {
+        "2wiki": 103,
+        "hotpotqa": 103,
+        "nq": 103,
+        "tq": 103
+      }
+    },
+    "ood_test": {
+      "rows": 1149,
+      "by_source": {
+        "bamboogle": 125,
+        "musique": 512,
+        "popqa": 512
+      }
+    }
+  },
+  "totals": {
+    "rows": 3197,
+    "by_source": {
+      "2wiki": 512,
+      "bamboogle": 125,
+      "hotpotqa": 512,
+      "musique": 512,
+      "nq": 512,
+      "popqa": 512,
+      "tq": 512
+    }
+  }
+}

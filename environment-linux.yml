@@ -1,0 +1,12 @@
+name: stageweaver-linux-cu121
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - git
+  - sqlite
+  - ffmpeg
+  - poppler
+  - pip:
+      - -r requirements-linux-cu121.txt
