@@ -490,6 +490,15 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     best_val = None
     best_payload = None
     step = 0
+
+    def _trainable_state_dict(module: nn.Module) -> dict[str, torch.Tensor]:
+        trainable_names = {name for name, param in module.named_parameters() if param.requires_grad}
+        return {
+            name: tensor.detach().cpu()
+            for name, tensor in module.state_dict().items()
+            if name in trainable_names
+        }
+
     for epoch in range(1, args.epochs + 1):
         composer.train()
         projector.train()
@@ -547,7 +556,8 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             best_val = val_metrics["avg_loss"]
             best_payload = {
                 "composer_config": composer_cfg.__dict__,
-                "composer_state_dict": {k: v.detach().cpu() for k, v in composer.state_dict().items()},
+                "composer_state_dict": _trainable_state_dict(composer),
+                "composer_state_dict_type": "trainable_only",
                 "projector_state_dict": {k: v.detach().cpu() for k, v in projector.state_dict().items()},
                 "projector_config": {
                     "composer_hidden_size": composer.hidden_size,

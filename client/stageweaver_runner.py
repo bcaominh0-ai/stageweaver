@@ -358,7 +358,7 @@ class StageWeaverComposerRuntime:
             StageWeaverComposerConfig(**composer_config),
             device=self.device,
         )
-        self.composer.load_state_dict(composer_state_dict)
+        self.composer.load_state_dict(composer_state_dict, strict=False)
         self.composer.eval()
         self.projector = StageWeaverProjector(
             composer_hidden_size=int(projector_config["composer_hidden_size"]),
