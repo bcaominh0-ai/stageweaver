@@ -9,6 +9,12 @@ from pathlib import Path
 from typing import Any
 
 NEED_NEXT_TEXT = "search again, crawl, extract, verify, or finish"
+NEED_NEXT_SENTENCE = "Decide whether to search again, crawl, extract, verify, or finish."
+NEED_NEXT_BLOCK_RE = re.compile(
+    r"\n?\[NEED_NEXT\]\s*(?:\r?\n)?\s*"
+    r"(?:Decide whether to search again, crawl, extract, verify, or finish\.)?",
+    re.IGNORECASE,
+)
 HARMFUL_OUTPUT_RE = re.compile(
     r"cannot|unable|no\s+information|no\s+available\s+information|insufficient|无法|不能|不确定",
     re.IGNORECASE,
@@ -78,6 +84,23 @@ def has_need_next_pollution(row: dict[str, Any]) -> bool:
     return "[NEED_NEXT]" in text or NEED_NEXT_TEXT in text
 
 
+def sanitize_legacy_need_next_text(text: str) -> str:
+    sanitized = NEED_NEXT_BLOCK_RE.sub("", text)
+    sanitized = sanitized.replace(NEED_NEXT_SENTENCE, "")
+    sanitized = sanitized.replace(NEED_NEXT_TEXT, "")
+    return re.sub(r"\n{3,}", "\n\n", sanitized).strip()
+
+
+def sanitize_legacy_need_next(value: Any) -> Any:
+    if isinstance(value, str):
+        return sanitize_legacy_need_next_text(value)
+    if isinstance(value, list):
+        return [sanitize_legacy_need_next(item) for item in value]
+    if isinstance(value, dict):
+        return {key: sanitize_legacy_need_next(item) for key, item in value.items()}
+    return value
+
+
 def output_text(row: dict[str, Any]) -> str:
     trajectory = executor_trajectory(row)
     return "\n".join(
@@ -118,11 +141,11 @@ def classify_executor_memory(row: dict[str, Any]) -> tuple[str, list[str]]:
         reasons.append("positive_no_tool_cannot_output")
     if is_positive(row) and tool_call_count(row) == 0 and not is_synthesis_executor_row(row):
         reasons.append("positive_legacy_no_tool_non_synthesis")
-    if reasons:
+    if any(reason != "need_next_pollution" for reason in reasons):
         return "filtered", reasons
     if is_synthesis_executor_row(row) and tool_call_count(row) == 0:
-        return "synthesis", []
-    return "action_oriented", []
+        return "synthesis", reasons
+    return "action_oriented", reasons
 
 
 def annotate_executor_row(row: dict[str, Any], memory_type: str, reasons: list[str]) -> dict[str, Any]:

@@ -15,6 +15,7 @@ try:
         is_positive,
         load_jsonl,
         render_audit_markdown,
+        sanitize_legacy_need_next,
         write_jsonl,
     )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
@@ -26,8 +27,19 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
         is_positive,
         load_jsonl,
         render_audit_markdown,
+        sanitize_legacy_need_next,
         write_jsonl,
     )
+
+
+HARD_FILTER_REASONS = {
+    "positive_no_tool_cannot_output",
+    "positive_legacy_no_tool_non_synthesis",
+}
+
+
+def should_filter_executor_row(row: dict[str, Any], reasons: list[str]) -> bool:
+    return is_positive(row) and any(reason in HARD_FILTER_REASONS for reason in reasons)
 
 
 def filter_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -35,14 +47,15 @@ def filter_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[
     filtered: list[dict[str, Any]] = []
     for row in rows:
         if not is_executor_row(row):
-            kept.append(row)
+            kept.append(sanitize_legacy_need_next(row))
             continue
         memory_type, reasons = classify_executor_memory(row)
         annotated = annotate_executor_row(row, memory_type, reasons)
-        if memory_type == "filtered" and (is_positive(row) or "need_next_pollution" in reasons):
+        if should_filter_executor_row(row, reasons):
+            annotated = annotate_executor_row(row, "filtered", reasons)
             filtered.append(annotated)
             continue
-        kept.append(annotated)
+        kept.append(sanitize_legacy_need_next(annotated))
     return kept, filtered
 
 
@@ -57,6 +70,7 @@ def filter_bank_file(input_path: str | Path, output_path: str | Path) -> dict[st
         "output_rows": len(kept),
         "filtered_executor_rows": len(filtered),
         "filtered_positive_executor_rows": sum(1 for row in filtered if is_positive(row)),
+        "sanitized_executor_rows": sum(1 for row in kept if is_executor_row(row)),
         "filtered_source_ids": [str(row.get("source_id", "")) for row in filtered],
     }
 
