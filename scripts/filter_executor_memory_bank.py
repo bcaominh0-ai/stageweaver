@@ -32,14 +32,11 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
     )
 
 
-HARD_FILTER_REASONS = {
-    "positive_no_tool_cannot_output",
-    "positive_legacy_no_tool_non_synthesis",
-}
+KEEP_EXECUTOR_MEMORY_TYPES = {"action_oriented", "synthesis"}
 
 
-def should_filter_executor_row(row: dict[str, Any], reasons: list[str]) -> bool:
-    return is_positive(row) and any(reason in HARD_FILTER_REASONS for reason in reasons)
+def should_filter_executor_row(memory_type: str) -> bool:
+    return memory_type not in KEEP_EXECUTOR_MEMORY_TYPES
 
 
 def filter_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -51,8 +48,7 @@ def filter_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[
             continue
         memory_type, reasons = classify_executor_memory(row)
         annotated = annotate_executor_row(row, memory_type, reasons)
-        if should_filter_executor_row(row, reasons):
-            annotated = annotate_executor_row(row, "filtered", reasons)
+        if should_filter_executor_row(memory_type):
             filtered.append(annotated)
             continue
         kept.append(sanitize_legacy_need_next(annotated))

@@ -25,6 +25,12 @@ SYNTHESIS_TASK_RE = re.compile(
     r"\bidentify\s+which\b",
     re.IGNORECASE,
 )
+ERROR_ONLY_RE = re.compile(
+    r"^\s*(?:error|exception|traceback|timeout|timed out|failed|failure|tool error|"
+    r"permission denied|connection error|network error|rate limit|not found)\b",
+    re.IGNORECASE,
+)
+SECTION_RE_TEMPLATE = r"\[{section}\]\s*(.*?)(?=\n\[[A-Z0-9_]+\]|\Z)"
 
 
 def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -57,13 +63,60 @@ def executor_trajectory(row: dict[str, Any]) -> dict[str, Any]:
     return dict(dict(row.get("metadata") or {}).get("executor_trajectory") or {})
 
 
-def tool_call_count(row: dict[str, Any]) -> int:
+def attempted_tool_call_count(row: dict[str, Any]) -> int:
     calls = executor_trajectory(row).get("tool_calls") or []
     return len(calls) if isinstance(calls, list) else 0
 
 
+def tool_call_count(row: dict[str, Any]) -> int:
+    return attempted_tool_call_count(row)
+
+
+def _meaningful_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text.upper() in {"[NONE]", "NONE", "NULL", "N/A"}:
+        return ""
+    return text
+
+
+def _is_error_only_text(text: str) -> bool:
+    value = _meaningful_text(text)
+    if not value:
+        return False
+    return bool(ERROR_ONLY_RE.search(value))
+
+
+def _is_pure_error_call(call: dict[str, Any]) -> bool:
+    error = _meaningful_text(call.get("error"))
+    observation = _meaningful_text(call.get("observation"))
+    observation_summary = _meaningful_text(call.get("observation_summary"))
+    observed_text = "\n".join(part for part in (observation, observation_summary) if part)
+    if error and (not observed_text or _is_error_only_text(observed_text)):
+        return True
+    return bool(observed_text and _is_error_only_text(observed_text))
+
+
+def _tool_name(call: dict[str, Any]) -> str:
+    return _meaningful_text(call.get("tool_name"))
+
+
+def informative_tool_call_count(row: dict[str, Any]) -> int:
+    calls = executor_trajectory(row).get("tool_calls") or []
+    if not isinstance(calls, list):
+        return 0
+    count = 0
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        observation = _meaningful_text(call.get("observation"))
+        observation_summary = _meaningful_text(call.get("observation_summary"))
+        if _tool_name(call) and (observation or observation_summary) and not _is_pure_error_call(call):
+            count += 1
+    return count
+
+
 def has_real_tool_trajectory(row: dict[str, Any]) -> bool:
-    return tool_call_count(row) > 0 and not bool(executor_trajectory(row).get("legacy_format", False))
+    return informative_tool_call_count(row) > 0 and not bool(executor_trajectory(row).get("legacy_format", False))
 
 
 def row_text(row: dict[str, Any]) -> str:
@@ -114,7 +167,18 @@ def output_text(row: dict[str, Any]) -> str:
 
 
 def has_harmful_cannot_output(row: dict[str, Any]) -> bool:
-    return bool(HARMFUL_OUTPUT_RE.search(output_text(row)))
+    return bool(HARMFUL_OUTPUT_RE.search(final_output_text(row)))
+
+
+def final_output_text(row: dict[str, Any]) -> str:
+    trajectory = executor_trajectory(row)
+    return "\n".join(
+        str(part or "")
+        for part in (
+            trajectory.get("final_output", ""),
+            row.get("target_text", ""),
+        )
+    )
 
 
 def is_synthesis_executor_row(row: dict[str, Any]) -> bool:
@@ -131,21 +195,63 @@ def is_synthesis_executor_row(row: dict[str, Any]) -> bool:
     return bool(SYNTHESIS_TASK_RE.search(task))
 
 
+def _section_text(text: str, section: str) -> str:
+    match = re.search(SECTION_RE_TEMPLATE.format(section=re.escape(section)), text, flags=re.DOTALL)
+    return _meaningful_text(match.group(1)) if match else ""
+
+
+def _partial_result_text(row: dict[str, Any]) -> str:
+    state_texts = [
+        str(row.get("current_state_text") or ""),
+        str(row.get("state_text") or ""),
+    ]
+    for text in state_texts:
+        partial = _section_text(text, "PARTIAL_RESULT")
+        if partial:
+            return partial
+    return ""
+
+
+def has_upstream_evidence(row: dict[str, Any]) -> bool:
+    trajectory = executor_trajectory(row)
+    observations = trajectory.get("observations") or []
+    if isinstance(observations, list) and any(_meaningful_text(item) for item in observations):
+        return True
+    if _partial_result_text(row):
+        return True
+    for field in ("subtask_memory_text", "tool_memory_text"):
+        if _meaningful_text(row.get(field)):
+            return True
+    return False
+
+
 def classify_executor_memory(row: dict[str, Any]) -> tuple[str, list[str]]:
     if not is_executor_row(row):
         return "planner", []
     reasons: list[str] = []
     if has_need_next_pollution(row):
         reasons.append("need_next_pollution")
-    if is_positive(row) and tool_call_count(row) == 0 and has_harmful_cannot_output(row):
-        reasons.append("positive_no_tool_cannot_output")
-    if is_positive(row) and tool_call_count(row) == 0 and not is_synthesis_executor_row(row):
-        reasons.append("positive_legacy_no_tool_non_synthesis")
-    if any(reason != "need_next_pollution" for reason in reasons):
-        return "filtered", reasons
-    if is_synthesis_executor_row(row) and tool_call_count(row) == 0:
-        return "synthesis", reasons
-    return "action_oriented", reasons
+    attempted = attempted_tool_call_count(row)
+    informative = informative_tool_call_count(row)
+    cannot = has_harmful_cannot_output(row)
+    if attempted > 0 and cannot:
+        reasons.append("tool_call_cannot_output")
+        return "marked_tool_cannot", reasons
+    if attempted == 0 and cannot:
+        reasons.append("no_tool_cannot_output")
+        return "harmful", reasons
+    if informative > 0:
+        return "action_oriented", reasons
+    if attempted > 0:
+        reasons.append("attempted_tool_without_informative_observation")
+        return "weak_action_oriented", reasons
+    if is_synthesis_executor_row(row):
+        if has_upstream_evidence(row):
+            return "synthesis", reasons
+        reasons.append("synthesis_without_upstream_evidence")
+        return "synthesis_candidate", reasons
+    reasons.append("legacy_no_tool_non_synthesis")
+    return "synthesis_candidate", reasons
 
 
 def annotate_executor_row(row: dict[str, Any], memory_type: str, reasons: list[str]) -> dict[str, Any]:
@@ -170,17 +276,32 @@ def audit_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     real_positive = [row for row in positive_executor_rows if has_real_tool_trajectory(row)]
     harmful_no_tool = [
         row
-        for row in positive_executor_rows
-        if tool_call_count(row) == 0 and has_harmful_cannot_output(row)
+        for row in executor_rows
+        if attempted_tool_call_count(row) == 0 and has_harmful_cannot_output(row)
     ]
+    positive_harmful_no_tool = [row for row in harmful_no_tool if is_positive(row)]
+    attempted_tool_rows = [row for row in executor_rows if attempted_tool_call_count(row) > 0]
+    informative_tool_rows = [row for row in executor_rows if informative_tool_call_count(row) > 0]
     return {
         "rows_total": len(rows),
         "planner_rows": len(rows) - len(executor_rows),
         "executor_rows": len(executor_rows),
         "positive_executor_rows": len(positive_executor_rows),
         "need_next_rows": sum(1 for row in executor_rows if has_need_next_pollution(row)),
-        "tool_calls_zero_executor_rows": sum(1 for row in executor_rows if tool_call_count(row) == 0),
-        "positive_no_tool_cannot_rows": len(harmful_no_tool),
+        "tool_calls_zero_executor_rows": sum(1 for row in executor_rows if attempted_tool_call_count(row) == 0),
+        "attempted_tool_call_executor_rows": len(attempted_tool_rows),
+        "informative_tool_call_executor_rows": len(informative_tool_rows),
+        "weak_action_oriented_rows": sum(
+            1 for row in executor_rows if classify_executor_memory(row)[0] == "weak_action_oriented"
+        ),
+        "marked_tool_cannot_rows": sum(
+            1 for row in executor_rows if classify_executor_memory(row)[0] == "marked_tool_cannot"
+        ),
+        "synthesis_candidate_rows": sum(
+            1 for row in executor_rows if classify_executor_memory(row)[0] == "synthesis_candidate"
+        ),
+        "no_tool_cannot_rows": len(harmful_no_tool),
+        "positive_no_tool_cannot_rows": len(positive_harmful_no_tool),
         "positive_executor_real_tool_trajectory_rows": len(real_positive),
         "positive_executor_real_tool_trajectory_ratio": (
             len(real_positive) / len(positive_executor_rows) if positive_executor_rows else 0.0

@@ -53,7 +53,15 @@ class ExecutorMemoryBankFilterTests(unittest.TestCase):
     def test_audit_detects_need_next_pollution(self) -> None:
         row = _executor_row(
             target="[RETURN] answer",
-            tool_calls=[{"tool": "search", "arguments": {"query": "Ada Lovelace"}}],
+            tool_calls=[
+                {
+                    "tool_name": "search",
+                    "arguments": {"query": "Ada Lovelace"},
+                    "observation": "Ada Lovelace was an English mathematician.",
+                    "observation_summary": "English mathematician",
+                    "error": "",
+                }
+            ],
             state_suffix="\n[NEED_NEXT]\nDecide whether to search again, crawl, extract, verify, or finish.",
         )
         stats = audit_rows([row])
@@ -68,7 +76,15 @@ class ExecutorMemoryBankFilterTests(unittest.TestCase):
         row = _executor_row(
             source_id="executor-need-next",
             target="[RETURN] answer",
-            tool_calls=[{"tool": "search", "arguments": {"query": "Ada Lovelace"}}],
+            tool_calls=[
+                {
+                    "tool_name": "search",
+                    "arguments": {"query": "Ada Lovelace"},
+                    "observation": "Ada Lovelace was an English mathematician.",
+                    "observation_summary": "English mathematician",
+                    "error": "",
+                }
+            ],
             state_suffix="\n[NEED_NEXT]\nDecide whether to search again, crawl, extract, verify, or finish.",
         )
         row["source_text"] = "[CURRENT_STATE]\n[NEED_NEXT]\nDecide whether to search again, crawl, extract, verify, or finish."
@@ -103,7 +119,8 @@ class ExecutorMemoryBankFilterTests(unittest.TestCase):
 
         self.assertEqual(kept, [])
         self.assertEqual(len(filtered), 1)
-        self.assertIn("positive_no_tool_cannot_output", filtered[0]["metadata"]["filter_reason"])
+        self.assertEqual(filtered[0]["metadata"]["executor_memory_type"], "harmful")
+        self.assertIn("no_tool_cannot_output", filtered[0]["metadata"]["filter_reason"])
 
     def test_planner_rows_are_never_filtered(self) -> None:
         planner = _planner_row()
@@ -116,6 +133,78 @@ class ExecutorMemoryBankFilterTests(unittest.TestCase):
 
         self.assertEqual([row["source_id"] for row in kept], ["planner-1"])
         self.assertEqual(len(filtered), 1)
+
+    def test_tool_call_with_empty_observation_is_not_action_oriented(self) -> None:
+        row = _executor_row(
+            target="[RETURN] Ada Lovelace was English.",
+            tool_calls=[{"tool_name": "search", "observation": "", "observation_summary": "", "error": ""}],
+        )
+
+        memory_type, reasons = classify_executor_memory(row)
+
+        self.assertEqual(memory_type, "weak_action_oriented")
+        self.assertIn("attempted_tool_without_informative_observation", reasons)
+
+    def test_tool_call_with_only_error_is_not_action_oriented(self) -> None:
+        row = _executor_row(
+            target="[RETURN] Ada Lovelace was English.",
+            tool_calls=[
+                {
+                    "tool_name": "search",
+                    "observation": "Error: upstream timeout",
+                    "observation_summary": "",
+                    "error": "upstream timeout",
+                }
+            ],
+        )
+
+        memory_type, reasons = classify_executor_memory(row)
+
+        self.assertEqual(memory_type, "weak_action_oriented")
+        self.assertIn("attempted_tool_without_informative_observation", reasons)
+
+    def test_tool_call_then_cannot_output_is_marked_tool_cannot(self) -> None:
+        row = _executor_row(
+            target="[RETURN] I cannot determine this from the available evidence.",
+            tool_calls=[
+                {
+                    "tool_name": "search",
+                    "observation": "Ada Lovelace biography result.",
+                    "observation_summary": "biography result",
+                    "error": "",
+                }
+            ],
+        )
+
+        memory_type, reasons = classify_executor_memory(row)
+
+        self.assertEqual(memory_type, "marked_tool_cannot")
+        self.assertIn("tool_call_cannot_output", reasons)
+
+    def test_no_tool_cannot_is_filtered_even_when_reward_zero(self) -> None:
+        row = _executor_row(
+            reward=0,
+            target="[RETURN] I cannot answer this.",
+            tool_calls=[],
+        )
+
+        kept, filtered = filter_rows([row])
+
+        self.assertEqual(kept, [])
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["metadata"]["executor_memory_type"], "harmful")
+
+    def test_no_tool_synthesis_without_upstream_evidence_is_candidate(self) -> None:
+        row = _executor_row(
+            task="Summarize the evidence and give the final answer.",
+            target="[RETURN] The answer is Ada Lovelace.",
+            tool_calls=[],
+        )
+
+        memory_type, reasons = classify_executor_memory(row)
+
+        self.assertEqual(memory_type, "synthesis_candidate")
+        self.assertIn("synthesis_without_upstream_evidence", reasons)
 
 
 if __name__ == "__main__":
