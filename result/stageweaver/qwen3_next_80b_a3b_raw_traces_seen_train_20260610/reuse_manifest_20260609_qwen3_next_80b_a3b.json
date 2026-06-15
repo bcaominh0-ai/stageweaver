@@ -1,0 +1,150 @@
+{
+  "reused_trace_source": "result/stageweaver/manual_teacher_compare_20_20260609/qwen3_next_80b_a3b/tracebank_seen_train/trace_collect_seen_train.jsonl",
+  "reused_results_source": "result/stageweaver/manual_teacher_compare_20_20260609/qwen3_next_80b_a3b/tracebank_seen_train/results_none_full_both_pmax512_emax512.jsonl",
+  "semantic_judge_source": "result/stageweaver/manual_teacher_compare_20_20260609/semantic_judge_gpt4omini.json",
+  "target_trace_jsonl": "result/stageweaver/qwen3_next_80b_a3b_raw_traces_seen_train_20260610/trace_collect_seen_train.jsonl",
+  "target_results_jsonl": "result/stageweaver/qwen3_next_80b_a3b_raw_traces_seen_train_20260610/results_none_full_both_pmax512_emax512.jsonl",
+  "reused_count": 20,
+  "items": [
+    {
+      "sample_index": 0,
+      "seen_train_index": 49,
+      "question": "Where was the director of film The Messenger (2009 Film) born?",
+      "pred_answer": "Jaffa, Tel Aviv, Israel",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 1,
+      "seen_train_index": 296,
+      "question": "Which country Eugenia Livanos's husband is from?",
+      "pred_answer": "Greece",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 2,
+      "seen_train_index": 334,
+      "question": "Which film was released first, Nell'S Eugenic Wedding or Night Eyes 2?",
+      "pred_answer": "Nell's Eugenic Wedding",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 3,
+      "seen_train_index": 345,
+      "question": "Where was the father of Eugene Fubini born?",
+      "pred_answer": "Guido Fubini, the father of Eugene Fubini, was born in Venice, Italy.",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 4,
+      "seen_train_index": 556,
+      "question": "The mother of  Megan Phelps-Roper is best known as the former spokesperson of a church located in what city?",
+      "pred_answer": "Topeka",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 5,
+      "seen_train_index": 601,
+      "question": "Which novelist was German, David Guterson or Thomas Mann?",
+      "pred_answer": "Thomas Mann",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 6,
+      "seen_train_index": 611,
+      "question": "Heinrich Gross participated in the Nazi regime's Aktion T4 more commonly referred to as what?",
+      "pred_answer": "T4 Euthanasia Program",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 7,
+      "seen_train_index": 872,
+      "question": "colby chees is named after a town in what state",
+      "pred_answer": "Wisconsin",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 8,
+      "seen_train_index": 1018,
+      "question": "what type of artwork was created in the safavid empire",
+      "pred_answer": "Persian miniatures, manuscript illumination, architecture, carpet weaving, textiles and embroidery, ceramics, metalwork, glassware",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 9,
+      "seen_train_index": 1031,
+      "question": "what is an example of a government monopoly in the united states",
+      "pred_answer": "United States Postal Service",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 10,
+      "seen_train_index": 1053,
+      "question": "what is the difference between ron and mon",
+      "pred_answer": "RON is measured under mild conditions and is higher, MON is measured under severe conditions and is lower; RON is used in most countries, MON is used with RON to calculate AKI in the U.S.",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 11,
+      "seen_train_index": 1062,
+      "question": "who rides so late through night and wind",
+      "pred_answer": "The line \"Who rides so late through night and wind?\" is from Johann Wolfgang von Goethe's poem \"Erlkönig\" (also known as \"The Erlking\" or \"The Elf-King\"). The poem, written in 1782, depicts a father riding through the night with his sick child, who is being lured to his death by the supernatural Erlking. It is one of Goethe's most famous works and was famously set to music by Franz Schubert as an art song.",
+      "semantic_judgement": "incorrect"
+    },
+    {
+      "sample_index": 12,
+      "seen_train_index": 1098,
+      "question": "the assassination of gianni versace american crime story season 2 episode 2",
+      "pred_answer": "January 24, 2018",
+      "semantic_judgement": "incorrect"
+    },
+    {
+      "sample_index": 13,
+      "seen_train_index": 1132,
+      "question": "krypton-85 decays by emission of a beta particle. the product of this decay is",
+      "pred_answer": "rubidium-85",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 14,
+      "seen_train_index": 1160,
+      "question": "where did they film the theory of everything",
+      "pred_answer": "Cambridge, London, Buckinghamshire, East Sussex, Surrey",
+      "semantic_judgement": "incorrect"
+    },
+    {
+      "sample_index": 15,
+      "seen_train_index": 1274,
+      "question": "Which is the largest cat in the world?",
+      "pred_answer": "Siberian tiger",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 16,
+      "seen_train_index": 1287,
+      "question": "In Ian Fleming’s novel ‘Moonraker’, Sir Hugo Drax is suspected of cheating at which game in the Mayfair club ‘Blades’?",
+      "pred_answer": "bridge",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 17,
+      "seen_train_index": 1491,
+      "question": "Which group has had hits with the albums 'Hopes and Fears', and `Under the Iron Sea'?",
+      "pred_answer": "Keane",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 18,
+      "seen_train_index": 1501,
+      "question": "Who became Lord Mayor of London in 1397?",
+      "pred_answer": "Richard Whittington",
+      "semantic_judgement": "correct"
+    },
+    {
+      "sample_index": 19,
+      "seen_train_index": 1531,
+      "question": "Which Brooklyn-born author had parents named Malachy and Angela?",
+      "pred_answer": "Frank McCourt",
+      "semantic_judgement": "correct"
+    }
+  ]
+}
