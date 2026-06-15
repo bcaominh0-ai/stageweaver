@@ -11,6 +11,9 @@ PLAN_INIT = "PLAN_INIT"
 PLAN_REVISE = "PLAN_REVISE"
 EXEC_STEP = "EXEC_STEP"
 VALID_STAGES = {PLAN_INIT, PLAN_REVISE, EXEC_STEP}
+SUCCESS_CASE = "success_case"
+INSIGHT = "insight"
+VALID_MEMORY_TYPES = {SUCCESS_CASE, INSIGHT}
 
 
 @dataclass
@@ -31,13 +34,38 @@ class StageTuple:
     current_state_text: str = ""
     tool_memory_text: str = ""
     subtask_memory_text: str = ""
-    available_tools: list[str] = field(default_factory=list)
     retrieved_ids: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, compact: bool = False) -> dict[str, Any]:
         if self.stage not in VALID_STAGES:
             raise ValueError(f"Unsupported stage: {self.stage}")
+        if compact:
+            role = str(self.agent_role or role_for_stage(self.stage)).strip()
+            data: dict[str, Any] = {
+                "stage": self.stage,
+                "agent_role": role,
+            }
+            if self.question_text:
+                data["question_text"] = self.question_text
+            current_state = str(self.current_state_text or self.state_text).strip()
+            if current_state:
+                data["current_state_text"] = current_state
+            if self.target_text:
+                data["target_text"] = self.target_text
+
+            metadata = dict(self.metadata or {})
+            memory_type = str(metadata.get("memory_type") or (SUCCESS_CASE if int(self.reward) == 1 else "")).strip()
+            compact_metadata: dict[str, Any] = {}
+            if memory_type:
+                compact_metadata["memory_type"] = memory_type
+            executor_memory_text = str(metadata.get("executor_memory_text") or "").strip()
+            if executor_memory_text:
+                compact_metadata["executor_memory_text"] = executor_memory_text
+            if compact_metadata:
+                data["metadata"] = compact_metadata
+            return data
+
         data = asdict(self)
         data["reward"] = int(self.reward)
         return data
@@ -66,7 +94,6 @@ class StageTuple:
             current_state_text=str(data.get("current_state_text", "")),
             tool_memory_text=str(data.get("tool_memory_text", "")),
             subtask_memory_text=str(data.get("subtask_memory_text", "")),
-            available_tools=[str(x) for x in data.get("available_tools", [])],
             retrieved_ids=[str(x) for x in data.get("retrieved_ids", [])],
             metadata=dict(data.get("metadata", {})),
         )
@@ -96,6 +123,29 @@ def tuple_subtask_memory_text(item: StageTuple) -> str:
 
 def tuple_role(item: StageTuple) -> str:
     return str(item.agent_role or role_for_stage(item.stage)).strip()
+
+
+def tuple_memory_type(item: StageTuple | dict[str, Any]) -> str:
+    if isinstance(item, StageTuple):
+        metadata = dict(item.metadata or {})
+        explicit_type = metadata.get("memory_type")
+        reward = int(item.reward)
+    else:
+        metadata = dict(item.get("metadata", {}) or {})
+        explicit_type = metadata.get("memory_type") or item.get("memory_type")
+        reward = int(item.get("reward", 0) or 0)
+    memory_type = str(explicit_type or "").strip()
+    if memory_type:
+        return memory_type
+    return SUCCESS_CASE if reward == 1 else ""
+
+
+def is_role_memory_item(item: StageTuple | dict[str, Any]) -> bool:
+    return tuple_memory_type(item) in VALID_MEMORY_TYPES
+
+
+def role_memory_bucket_key(item: StageTuple) -> tuple[str, str]:
+    return (item.stage, tuple_role(item))
 
 
 def normalize_optional_text(text: Any) -> str:
@@ -213,23 +263,22 @@ def retrieval_query_text(*, role: str, question: Any, current_state: Any) -> str
 
 def serialize_role_conditioned_context(item: StageTuple, retrieved_cases_text: str = "") -> str:
     role = tuple_role(item)
-    if role == "executor":
-        current_state = retrieval_text(item)
-    else:
-        current_state = normalize_optional_text(tuple_current_state_text(item)) or "[NONE]"
+    current_state = retrieval_text(item)
     return serialize_role_conditioned_source(
         role=role,
+        stage=item.stage,
         current_state=current_state,
         retrieved_cases_text=retrieved_cases_text,
     )
 
 
-def serialize_role_conditioned_source(*, role: str, current_state: str, retrieved_cases_text: str = "") -> str:
+def serialize_role_conditioned_source(*, role: str, current_state: str, retrieved_cases_text: str = "", stage: str = "") -> str:
     return "\n".join(
         [
             f"[ROLE] {role}",
+            f"[STAGE] {stage or '[NONE]'}",
             f"[CURRENT_STATE] {current_state}",
-            "[RETRIEVED_POSITIVE_CASES]",
+            "[RETRIEVED_ROLE_MEMORY]",
             retrieved_cases_text or "[NONE]",
         ]
     )
@@ -238,7 +287,12 @@ def serialize_role_conditioned_source(*, role: str, current_state: str, retrieve
 def stage_memory_retrieval_key(item: dict[str, Any]) -> str:
     role = str(item.get("agent_role", "")).strip()
     if role == "executor":
+        metadata = dict(item.get("metadata", {}) or {})
         state_text = str(item.get("state_text", "")).strip()
+        if state_text.startswith("[EXECUTOR_QUERY]"):
+            task_text = str(metadata.get("raw_task_description") or metadata.get("task_description") or item.get("current_state_text", "")).strip()
+            if task_text and not task_text.startswith("[EXECUTOR_QUERY]"):
+                return task_text
         if state_text:
             return state_text
     return retrieval_query_text(
@@ -269,31 +323,11 @@ def retrieval_text(item: StageTuple) -> str:
     if role == "planner" and not normalize_optional_text(item.question_text):
         raise ValueError(f"planner retrieval requires question_text for source_id={item.source_id}")
     if role == "executor":
-        materialized_state = normalize_optional_text(item.state_text or item.current_state_text)
-        if materialized_state.startswith("[EXECUTOR_QUERY]"):
-            return materialized_state
-        trajectory = dict(item.metadata.get("executor_trajectory") or {})
-        raw_task_description = str(
+        return normalize_optional_text(
             item.metadata.get("raw_task_description")
             or item.metadata.get("task_description")
-            or tuple_current_state_text(item)
-        )
-        tool_history = list(trajectory.get("tool_calls") or [])
-        latest_observation = ""
-        if tool_history:
-            last_step = tool_history[-1]
-            if isinstance(last_step, dict):
-                latest_observation = str(last_step.get("observation_summary") or last_step.get("observation") or "")
-        return build_executor_current_state(
-            task_description=raw_task_description,
-            tool_history=[dict(step) for step in tool_history if isinstance(step, dict)],
-            latest_observation=latest_observation,
-            failed_calls=[dict(step) for step in tool_history if isinstance(step, dict) and step.get("error")],
-            repeated_calls=[dict(step) for step in tool_history if isinstance(step, dict) and step.get("reused_result")],
-            partial_result=str(trajectory.get("final_output", "")),
-            max_chars=2400,
-            obs_max_chars=600,
-            tool_history_k=4,
+            or item.state_text
+            or item.current_state_text
         )
     return retrieval_query_text(
         role=role,
@@ -318,4 +352,4 @@ def save_stage_tuples(path: str | Path, tuples_: Iterable[StageTuple]) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as handle:
         for item in tuples_:
-            handle.write(json.dumps(item.to_dict(), ensure_ascii=False) + "\n")
+            handle.write(json.dumps(item.to_dict(compact=True), ensure_ascii=False) + "\n")

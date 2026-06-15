@@ -14,24 +14,30 @@ except ModuleNotFoundError:  # pragma: no cover - smoke-test fallback
 POSITIVE_OUTPUT_FIELD_ORDER = [
     ("output", "[OUTPUT]"),
 ]
+SUCCESS_CASE = "success_case"
+INSIGHT = "insight"
+
+
+class _FallbackTokenizer:
+    @staticmethod
+    def encode(text: str) -> list[str]:
+        return text.split()
+
+    @staticmethod
+    def decode(tokens: list[str]) -> str:
+        return " ".join(tokens)
 
 
 def _get_tokenizer(model: str = "gpt-4.1"):
     if tiktoken is None:
-        class _FallbackTokenizer:
-            @staticmethod
-            def encode(text: str) -> list[str]:
-                return text.split()
-
-            @staticmethod
-            def decode(tokens: list[str]) -> str:
-                return " ".join(tokens)
-
         return _FallbackTokenizer()
     try:
         return tiktoken.encoding_for_model(model)
-    except KeyError:
-        return tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        try:
+            return tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            return _FallbackTokenizer()
 
 
 def normalize_text(text: str) -> str:
@@ -130,17 +136,35 @@ def serialize_executor_trajectory_case(
     return rendered
 
 
-def build_positive_output_entry(item: dict[str, Any]) -> dict[str, str]:
+def _memory_type(item: dict[str, Any]) -> str:
+    metadata = dict(item.get("metadata") or {})
+    explicit = str(metadata.get("memory_type") or item.get("memory_type") or "").strip()
+    if explicit:
+        return explicit
+    return SUCCESS_CASE if int(item.get("reward", 0) or 0) == 1 else ""
+
+
+def build_role_memory_entry(item: dict[str, Any]) -> dict[str, str]:
+    memory_type = _memory_type(item)
+    if memory_type == INSIGHT:
+        return {
+            "memory_type": INSIGHT,
+            "insight": normalize_text(str(item.get("target_text", item.get("insight", "")))),
+        }
     if _is_executor_case(item):
         return {
+            "memory_type": SUCCESS_CASE,
             "executor_case": serialize_executor_trajectory_case(item),
         }
     return {
+        "memory_type": SUCCESS_CASE,
         "output": normalize_text(str(item.get("target_text", item.get("plan", "")))),
     }
 
 
-def render_positive_output_entry(entry: dict[str, str]) -> str:
+def render_role_memory_entry(entry: dict[str, str]) -> str:
+    if entry.get("insight"):
+        return f"[INSIGHT] {normalize_text(entry['insight'])}".strip()
     if entry.get("executor_case"):
         return entry["executor_case"].strip()
     chunks: list[str] = []
@@ -149,6 +173,14 @@ def render_positive_output_entry(entry: dict[str, str]) -> str:
         if value:
             chunks.append(f"{label} {value}")
     return "\n".join(chunks).strip()
+
+
+def build_positive_output_entry(item: dict[str, Any]) -> dict[str, str]:
+    return build_role_memory_entry(item)
+
+
+def render_positive_output_entry(entry: dict[str, str]) -> str:
+    return render_role_memory_entry(entry)
 
 
 def _token_len(text: str, model: str = "gpt-4.1") -> int:
@@ -166,23 +198,30 @@ def _trim_to_budget(text: str, budget: int, model: str = "gpt-4.1") -> str:
     return enc.decode(tokens[:budget]).strip()
 
 
-def render_positive_output_memory(
+def render_role_memory(
     ranked_items: list[dict[str, Any]],
     budget_tokens: int,
     model: str = "gpt-4.1",
     bounded_budget_tokens: int | None = None,
 ) -> dict[str, Any]:
-    entries = [build_positive_output_entry(item) for item in ranked_items]
-    kept = [entry for entry in entries if entry.get("output") or entry.get("executor_case")]
+    entries = [build_role_memory_entry(item) for item in ranked_items]
+    kept = [entry for entry in entries if entry.get("output") or entry.get("executor_case") or entry.get("insight")]
     dropped = len(entries) - len(kept)
 
     def render_all(payload: list[dict[str, str]]) -> str:
         blocks = []
-        for idx, entry in enumerate(payload, start=1):
-            block = render_positive_output_entry(entry)
+        success_idx = 0
+        insight_idx = 0
+        for entry in payload:
+            block = render_role_memory_entry(entry)
             if block:
-                label = "POSITIVE_EXECUTOR_CASE" if entry.get("executor_case") else "POSITIVE_OUTPUT"
-                blocks.append(f"[{label}_{idx}]\n{block}")
+                if entry.get("memory_type") == INSIGHT or entry.get("insight"):
+                    insight_idx += 1
+                    label = f"INSIGHT_{insight_idx}"
+                else:
+                    success_idx += 1
+                    label = f"SUCCESS_CASE_{success_idx}"
+                blocks.append(f"[{label}]\n{block}")
         return "\n\n".join(blocks).strip()
 
     rendered = render_all(kept)
@@ -193,7 +232,7 @@ def render_positive_output_memory(
 
     if kept and _token_len(rendered, model) > budget_tokens:
         tail = kept[-1]
-        key = "executor_case" if tail.get("executor_case") else "output"
+        key = "insight" if tail.get("insight") else "executor_case" if tail.get("executor_case") else "output"
         tail[key] = _trim_to_budget(tail.get(key, ""), budget_tokens, model)
         rendered = render_all(kept)
 
@@ -210,3 +249,17 @@ def render_positive_output_memory(
         "hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "bounded_hash": hashlib.sha256(bounded_text.encode("utf-8")).hexdigest(),
     }
+
+
+def render_positive_output_memory(
+    ranked_items: list[dict[str, Any]],
+    budget_tokens: int,
+    model: str = "gpt-4.1",
+    bounded_budget_tokens: int | None = None,
+) -> dict[str, Any]:
+    return render_role_memory(
+        ranked_items,
+        budget_tokens=budget_tokens,
+        model=model,
+        bounded_budget_tokens=bounded_budget_tokens,
+    )

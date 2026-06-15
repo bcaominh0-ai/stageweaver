@@ -44,19 +44,18 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # System prompt for the meta-planner agent that breaks down complex problems
 META_SYSTEM_PROMPT = (
-    "You are the META‑PLANNER in a hierarchical AI system. A user will ask a\n"
-    "high‑level question. **First**: break the problem into a *minimal sequence*\n"
-    "of executable tasks. Reply ONLY in JSON with the schema:\n"
-    "{ \"plan\": [ {\"id\": INT, \"description\": STRING} … ] }\n\n"
-    "After each task is executed by the EXECUTOR you will receive its result.\n"
-    "Please carefully consider the descriptions of the time of web pages and events in the task, and take these factors into account when planning and giving the final answer.\n"
-    "If the final answer is complete, output it with the template:\n"
-    "FINAL ANSWER: <answer>\n\n" \
-    " YOUR FINAL ANSWER should be a number OR as few words as possible OR a comma separated list of numbers and/or strings. If you are asked for a number, don't use comma to write your number neither use units such as $ or percent sign unless specified otherwise. If you are asked for a string, don't use articles, neither abbreviations (e.g. for cities), and write the digits in plain text unless specified otherwise. If you are asked for a comma separated list, apply the above rules depending of whether the element to be put in the list is a number or a string.\n"
-    "Please ensure that the final answer strictly follows the question requirements, without any additional analysis.\n"
-    "If the final answer is not complete, emit a *new* JSON plan for the remaining work. Keep cycles as\n"
-    "few as possible. Never call tools yourself — that's the EXECUTOR's job."\
-    "⚠️  Reply with *pure JSON only*."
+    "You are the META-PLANNER in a hierarchical AI system. A user will ask a high-level question.\n\n"
+    "For the first response, break the problem into a minimal sequence of executable tasks. Reply ONLY in JSON with:\n"
+    "{ \"plan\": [ {\"id\": INT, \"description\": STRING}, ... ] }\n\n"
+    "After each task is executed by the EXECUTOR, you will receive its result. Carefully consider the dates and times of webpages, events, and the user's question when planning and giving the final answer.\n\n"
+    "If the answer is complete, reply ONLY in JSON with:\n"
+    "{ \"final\": { \"answer\": STRING } }\n\n"
+    "The final answer should be a number, as few words as possible, or a comma-separated list of numbers and/or strings. If asked for a number, do not use commas or units such as $ or % unless specified. If asked for a string, do not use articles or abbreviations, and write digits in plain text unless specified. If asked for a comma-separated list, apply these rules to each item.\n\n"
+    "Ensure the final answer strictly follows the question requirements, without any additional analysis.\n\n"
+    "If the answer is not complete, emit a new JSON plan for the remaining work:\n"
+    "{ \"plan\": [ {\"id\": INT, \"description\": STRING}, ... ] }\n\n"
+    "Keep cycles as few as possible. Never call tools yourself; that is the EXECUTOR's job.\n\n"
+    "⚠️ Reply with pure JSON only; no markdown and no extra text."
 )
 
 # System prompt for the executor agent that handles individual tasks
@@ -79,6 +78,7 @@ EXE_MODEL = "qwen3-8b"
 DEFAULT_LOCAL_MODEL_PATH = os.getenv("LOCAL_MODEL_PATH", "/wufeiyang/mem/M2/model/Qwen3-4B-Instruct-2507")
 DEFAULT_LOCAL_8B_MODEL_PATH = os.getenv("QWEN3_8B_MODEL_PATH", "")
 DEFAULT_GENERATION_HEADROOM = 15000
+DEFAULT_EXECUTOR_GENERATION_HEADROOM = 10240
 _LOCAL_RUNTIME_CACHE: dict[str, "LocalModelRuntime"] = {}
 
 # ---------------------------------------------------------------------------
@@ -147,6 +147,9 @@ class OpenAIBackend(ChatBackend):
             "messages": messages,
             "max_tokens": max_tokens,
         }
+        extra_body_json = os.getenv("OPENAI_EXTRA_BODY_JSON", "").strip()
+        if extra_body_json:
+            payload["extra_body"] = json.loads(extra_body_json)
         # Add tools to payload if provided
         if tools:
             payload["tools"] = tools
@@ -438,6 +441,19 @@ def _strip_fences(text: str) -> str:
     return m.group(0) if m else text
 
 
+def _is_plan_payload(text: str) -> bool:
+    cleaned = _strip_fences(text).strip()
+    if not cleaned.startswith("{"):
+        return False
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(payload, dict) and "plan" in payload and not any(
+        str(payload.get(key, "")).strip() for key in ("result", "answer", "final_answer", "content")
+    )
+
+
 def _fallback_answer_from_trace(trace: Dict[str, Any]) -> str:
     def _strip_task_result_prefix(text: str) -> str:
         cleaned = text.strip()
@@ -456,6 +472,8 @@ def _fallback_answer_from_trace(trace: Dict[str, Any]) -> str:
         except json.JSONDecodeError:
             return text
         if isinstance(payload, dict):
+            if "plan" in payload:
+                return ""
             for key in ("result", "answer", "final_answer", "content"):
                 candidate = str(payload.get(key, "")).strip()
                 if candidate:
@@ -476,7 +494,7 @@ def _fallback_answer_from_trace(trace: Dict[str, Any]) -> str:
                     continue
                 if candidate:
                     return candidate
-                continue
+                    continue
             if raw_result.startswith("{"):
                 candidate = _extract_structured_result(raw_result)
                 candidate = _strip_task_result_prefix(candidate)
@@ -503,14 +521,20 @@ def _extract_planner_final_answer(text: str) -> str:
         cleaned = re.sub(r"^Task\s+\d+\s+result:\s*", "", cleaned, flags=re.IGNORECASE).strip()
     if not cleaned:
         return ""
-    if cleaned.startswith("{"):
+    cleaned_json = _strip_fences(cleaned)
+    if cleaned_json.startswith("{"):
         try:
-            payload = json.loads(cleaned)
+            payload = json.loads(cleaned_json)
         except json.JSONDecodeError:
             return ""
         if isinstance(payload, dict):
             if "plan" in payload:
                 return ""
+            final_payload = payload.get("final")
+            if isinstance(final_payload, dict):
+                candidate = str(final_payload.get("answer", "")).strip()
+                if candidate:
+                    return candidate
             for key in ("result", "answer", "final_answer", "content"):
                 candidate = str(payload.get(key, "")).strip()
                 if candidate:
@@ -688,7 +712,9 @@ class HierarchicalClient:
     """
 
     # Maximum number of planning cycles before giving up
-    MAX_CYCLES = 3
+    MAX_CYCLES = int(os.getenv("STAGEWEAVER_MAX_CYCLES", "3"))
+    MAX_EXECUTOR_STEPS_PER_TASK = int(os.getenv("STAGEWEAVER_MAX_EXECUTOR_STEPS_PER_TASK", "48"))
+    TOOL_CALL_TIMEOUT_SEC = float(os.getenv("STAGEWEAVER_TOOL_CALL_TIMEOUT_SEC", "45"))
     TRACE_RESULT_CHARS = 4000
 
     def __init__(
@@ -843,6 +869,7 @@ class HierarchicalClient:
         executor_prefix_injection_mode: str = "append",
         executor_memory_refresh: str = "initial",
         planner_max_new_tokens: int = DEFAULT_GENERATION_HEADROOM,
+        executor_max_new_tokens: int = DEFAULT_EXECUTOR_GENERATION_HEADROOM,
         planner_memory_callback: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]] | None = None,
         executor_memory_callback: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]] | None = None,
     ) -> str:
@@ -871,7 +898,6 @@ class HierarchicalClient:
             "file_path": file,
             "meta_model": getattr(self.meta_llm, "model", None),
             "exec_model": self.exec_model,
-            "connected_tools": list(self.sessions.keys()),
             "cycles": [],
             "final_answer": None,
             "error": None,
@@ -1011,7 +1037,11 @@ class HierarchicalClient:
                 return error
 
             # Execute each task in the plan
-            for task in tasks:
+            for task_index, task in enumerate(tasks, start=1):
+                if not isinstance(task, dict):
+                    task = {"id": f"T{task_index}", "description": str(task)}
+                task.setdefault("id", f"T{task_index}")
+                task.setdefault("description", str(task.get("query") or task.get("question") or task))
                 task_desc = f"Task {task['id']}: {task['description']}"
                 task_trace: Dict[str, Any] = {
                     "task": task,
@@ -1085,6 +1115,42 @@ class HierarchicalClient:
 
                 # Execute task with potential tool calls
                 while True:
+                    if executor_step_id >= self.MAX_EXECUTOR_STEPS_PER_TASK:
+                        max_steps_note = (
+                            "Executor stopped after reaching "
+                            f"{self.MAX_EXECUTOR_STEPS_PER_TASK} tool/reasoning steps for this task."
+                        )
+                        _mark_latest_executor_memory_step("max_executor_steps_exceeded")
+                        final_msgs = trim_messages(
+                            exec_msgs
+                            + [
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        f"{max_steps_note} Do not call any more tools. "
+                                        "Using only the observations already available, provide the best concise final answer. "
+                                        "If the evidence is insufficient, answer with your best guess rather than explaining the limitation."
+                                    ),
+                                }
+                            ],
+                            MAX_CTX,
+                            model=EXE_MODEL,
+                        )
+                        final_reply = await self.exec_llm.chat(
+                            final_msgs,
+                            tools=None,
+                            tool_choice="none",
+                            max_tokens=min(128, executor_max_new_tokens),
+                            prefix_embeds=runtime_executor_prefix_embeds,
+                            prefix_injection_mode=runtime_executor_prefix_injection_mode,
+                        )
+                        task_trace["max_steps_note"] = max_steps_note
+                        task_trace["result"] = str(final_reply.get("content") or "").strip() or max_steps_note
+                        self.shared_history.append({
+                            "role": "assistant",
+                            "content": f"Task {task['id']} result: {task_trace['result']}"
+                        })
+                        break
                     if executor_memory_callback is not None and executor_memory_refresh == "per_step":
                         executor_bundle = await executor_memory_callback(
                             {
@@ -1124,7 +1190,7 @@ class HierarchicalClient:
                     exec_reply = await self.exec_llm.chat(
                         exec_msgs,
                         tools_schema,
-                        max_tokens=10240,
+                        max_tokens=executor_max_new_tokens,
                         prefix_embeds=runtime_executor_prefix_embeds,
                         prefix_injection_mode=runtime_executor_prefix_injection_mode,
                     )
@@ -1187,6 +1253,35 @@ class HierarchicalClient:
 
                     if exec_reply["content"]:
                         result_text = str(exec_reply["content"])
+                        if _is_plan_payload(result_text):
+                            malformed_tool_retry_count += 1
+                            error_msg = (
+                                "[executor role error] Executor returned a planner-style JSON plan instead "
+                                "of executing the task. Execute the assigned task using tools when needed, "
+                                "then return only the task result."
+                            )
+                            task_trace["tool_calls"].append({
+                                "requested_name": None,
+                                "resolved_name": None,
+                                "arguments_raw": result_text,
+                                "error": error_msg,
+                            })
+                            exec_msgs.extend([
+                                {"role": "assistant", "content": result_text},
+                                {"role": "user", "content": error_msg},
+                            ])
+                            if malformed_tool_retry_count >= max_malformed_tool_retries:
+                                final_error = (
+                                    "Executor repeatedly returned planner-style JSON plans "
+                                    f"after {max_malformed_tool_retries} attempts."
+                                )
+                                task_trace["result"] = final_error
+                                self.shared_history.append({
+                                    "role": "assistant",
+                                    "content": f"Task {task['id']} result: {final_error}"
+                                })
+                                break
+                            continue
                         _mark_latest_executor_memory_step("direct_text_result")
                         task_trace["result"] = result_text
                         history_result = re.sub(
@@ -1338,17 +1433,32 @@ class HierarchicalClient:
                             ])
                             continue
 
-                        result_msg = await session.call_tool(resolved, patched_args)
-                        _mark_latest_executor_memory_step("tool_success")
-                        result_text = str(result_msg.content)
+                        try:
+                            result_msg = await asyncio.wait_for(
+                                session.call_tool(resolved, patched_args),
+                                timeout=self.TOOL_CALL_TIMEOUT_SEC,
+                            )
+                            _mark_latest_executor_memory_step("tool_success")
+                            result_text = str(result_msg.content)
+                            tool_error = None
+                        except asyncio.TimeoutError:
+                            tool_error = (
+                                f"Tool '{resolved}' timed out after "
+                                f"{self.TOOL_CALL_TIMEOUT_SEC:g} seconds."
+                            )
+                            _mark_latest_executor_memory_step("tool_timeout")
+                            result_text = f"Error executing tool {resolved}: {tool_error}"
                         executed_tool_results[tool_signature] = result_text
-                        task_trace["tool_calls"].append({
+                        tool_call_record = {
                             "requested_name": t_name,
                             "resolved_name": resolved,
                             "arguments": patched_args,
                             "result_preview": self._short_result(result_text),
                             "result_chars": len(result_text),
-                        })
+                        }
+                        if tool_error is not None:
+                            tool_call_record["error"] = tool_error
+                        task_trace["tool_calls"].append(tool_call_record)
 
                         exec_msgs.extend([
                             {"role": "assistant", "content": None, "tool_calls": [call]},
@@ -1377,10 +1487,14 @@ class HierarchicalClient:
                     if task_trace["result"] is not None:
                         break
 
-        # If the planner never emits FINAL ANSWER, prefer the last grounded task result
+        # If the planner never emits a final answer, prefer the last grounded task result
         # over recycling the last plan JSON as the final answer.
         fallback_answer = _fallback_answer_from_trace(trace)
-        trace["final_answer"] = fallback_answer or meta_content.strip()
+        if fallback_answer:
+            trace["final_answer"] = fallback_answer
+        else:
+            trace["error"] = "[planner error] Planner exhausted cycles without a final answer or grounded task result."
+            trace["final_answer"] = trace["error"]
         self._write_trace(trace)
         return trace["final_answer"]
 

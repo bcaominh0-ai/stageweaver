@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python}"
+PYTHON_BIN="${PYTHON_BIN:-${REPO_ROOT}/.venv-cu128/bin/python}"
 export REPO_ROOT
 export SEARXNG_HOST="${SEARXNG_HOST:-http://127.0.0.1:8080}"
 

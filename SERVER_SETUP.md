@@ -6,21 +6,11 @@
 
 ## Python Environments
 
-- `.venv`: main StageWeaver validation environment.
-  - Uses `torch==2.5.1+cu121`.
-  - Good for dependency checks, py_compile, unit tests, MCP tool startup checks, and CPU semantic retriever smoke.
-- `.venv-cu128`: RTX 5090 CUDA validation environment.
+- `.venv-cu128`: main StageWeaver validation and RTX 5090 CUDA environment.
   - Uses `torch==2.7.0+cu128`.
   - Verified with RTX 5090 compute capability `(12, 0)` and a small CUDA matmul.
 
 Activate:
-
-```bash
-cd /home/ubuntu/projects/stageweaver
-source .venv/bin/activate
-```
-
-CUDA 12.8 environment:
 
 ```bash
 cd /home/ubuntu/projects/stageweaver
@@ -100,8 +90,23 @@ EXEC_MODEL_PATH=
 CRAWL_EXTRACT_BASE_URL=
 CRAWL_EXTRACT_API_KEY=
 CRAWL_EXTRACT_MODEL=
+AUDIO_TRANSCRIPTION_BASE_URL=
+AUDIO_TRANSCRIPTION_API_KEY=
+AUDIO_TRANSCRIPTION_MODEL=qwen3-omni-flash-all
+SOMARK_BASE_URL=https://www.dmxapi.cn/v1/responses
+SOMARK_API_KEY=
+SOMARK_MODEL=somark
 SEARXNG_HOST=http://127.0.0.1:8080
 ```
+
+For `server/documents_tool.py` audio transcription, configure an OpenAI-compatible
+endpoint with the `AUDIO_TRANSCRIPTION_*` variables above. A recommended model
+value is `qwen3-omni-flash-all`.
+
+For `server/documents_tool.py`, fill `SOMARK_API_KEY` if you want PDFs and
+supported image/pdf document types to use Somark first. PDF files fall back to
+local `PyPDF2` text extraction if Somark fails. The active Somark endpoint is
+configured through `SOMARK_BASE_URL`, with `SOMARK_MODEL` defaulting to `somark`.
 
 ## Minimal Runner Smoke
 
@@ -109,7 +114,7 @@ Do not run this until `.env` has been filled with valid endpoint/model settings.
 
 ```bash
 cd /home/ubuntu/projects/stageweaver
-source .venv/bin/activate
+source .venv-cu128/bin/activate
 python client/stageweaver_runner.py \
   --memory_mode memento_text \
   --data_jsonl data/deepresearcher_protocol/seen_dev.jsonl \

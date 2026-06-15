@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python}"
+PYTHON_BIN="${PYTHON_BIN:-${REPO_ROOT}/.venv-cu128/bin/python}"
 OUTPUT_DIR="${REPO_ROOT}/result/stageweaver/current/eval_seen_dev"
 DATA_JSONL="${REPO_ROOT}/data/deepresearcher_protocol/seen_dev.jsonl"
 MEMORY_MODE="${MEMORY_MODE:-stageweaver}"

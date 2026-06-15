@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from memory.memento_text_memory import load_memento_planner_cases
+from client import stageweaver_runner
 
 ACTIVE_PATHS = [
     ROOT / "client",
@@ -176,6 +179,65 @@ class CurrentProtocolTests(unittest.TestCase):
         self.assertIn("result\" / \"stageweaver\" / \"current\" / \"eval_ood_test", runner)
         self.assertNotIn('PROJECT_ROOT / "memory" / "memory.jsonl"', runner)
         self.assertIn("There is no fallback to legacy `memory.jsonl`", protocol)
+
+    def test_trace_bank_defaults_use_teacher_endpoint(self) -> None:
+        argv = [
+            "stageweaver_runner.py",
+            "--memory_mode",
+            "none",
+            "--diagnostic_trace_bank",
+        ]
+        env = {
+            "TEACHER_BASE_URL": "http://teacher.local/v1",
+            "TEACHER_API_KEY": "teacher-key",
+            "TEACHER_MODEL": "teacher-model",
+        }
+        with mock.patch.object(sys, "argv", argv), mock.patch.dict(os.environ, env, clear=False):
+            args = stageweaver_runner.parse_args()
+        self.assertEqual(args.openai_base_url, "http://teacher.local/v1")
+        self.assertEqual(args.openai_api_key, "teacher-key")
+        self.assertEqual(args.meta_model, "teacher-model")
+        self.assertEqual(args.exec_model, "teacher-model")
+
+    def test_trace_bank_explicit_agent_args_override_teacher_defaults(self) -> None:
+        argv = [
+            "stageweaver_runner.py",
+            "--memory_mode",
+            "none",
+            "--diagnostic_trace_bank",
+            "--openai_base_url",
+            "http://manual.local/v1",
+            "--meta_model",
+            "manual-meta",
+        ]
+        env = {
+            "TEACHER_BASE_URL": "http://teacher.local/v1",
+            "TEACHER_API_KEY": "teacher-key",
+            "TEACHER_MODEL": "teacher-model",
+        }
+        with mock.patch.object(sys, "argv", argv), mock.patch.dict(os.environ, env, clear=False):
+            args = stageweaver_runner.parse_args()
+        self.assertEqual(args.openai_base_url, "http://manual.local/v1")
+        self.assertEqual(args.openai_api_key, "teacher-key")
+        self.assertEqual(args.meta_model, "manual-meta")
+        self.assertEqual(args.exec_model, "teacher-model")
+
+    def test_generation_caps_include_executor_cap(self) -> None:
+        argv = [
+            "stageweaver_runner.py",
+            "--memory_mode",
+            "none",
+            "--diagnostic_trace_bank",
+            "--planner_max_new_tokens",
+            "512",
+            "--executor_max_new_tokens",
+            "768",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            args = stageweaver_runner.parse_args()
+        self.assertEqual(args.planner_max_new_tokens, 512)
+        self.assertEqual(args.executor_max_new_tokens, 768)
+        self.assertEqual(stageweaver_runner._generation_cap_tag(512, 768), "_pmax512_emax768")
 
     def test_semantic_workflow_scripts_exist(self) -> None:
         for path in WORKFLOW_SCRIPTS:

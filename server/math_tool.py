@@ -26,7 +26,7 @@ async def sub(a: float, b: float) -> float:
 @mcp.tool()
 async def multiply(a: float, b: float, decimal_places: int = 2) -> float:
     """Return a * b, rounded to *decimal_places* (default 2)."""
-    return round(a * b, decimal_places)
+    return builtins.round(a * b, decimal_places)
 
 
 @mcp.tool()
@@ -34,7 +34,7 @@ async def divide(a: float, b: float, decimal_places: int = 2) -> float:
     """Return a / b, rounded to *decimal_places* (default 2)."""
     if b == 0:
         raise ValueError("division by zero")
-    return round(a / b, decimal_places)
+    return builtins.round(a / b, decimal_places)
 
 
 @mcp.tool()

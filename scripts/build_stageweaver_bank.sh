@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python}"
+PYTHON_BIN="${PYTHON_BIN:-${REPO_ROOT}/.venv-cu128/bin/python}"
 OUTPUT_DIR="${REPO_ROOT}/result/stageweaver/current/stage_bank"
 TRAIN_TRACE_JSONL="${REPO_ROOT}/result/stageweaver/current/tracebank_seen_train/trace_collect_seen_train.jsonl"
 TRAIN_RESULTS_JSONL="${REPO_ROOT}/result/stageweaver/current/tracebank_seen_train/results_none_full_both.jsonl"

@@ -38,6 +38,23 @@ EXPLICIT_VISION_OVERRIDE = any(
     for name in ("VISION_OPENAI_API_KEY", "VISION_OPENAI_BASE_URL", "VISION_MODEL")
 )
 
+REMOTE_IMAGE_HEADERS = [
+    {"User-Agent": "Mozilla/5.0 (StageWeaver image_tool)"},
+    {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.google.com/",
+        "Sec-Fetch-Dest": "image",
+        "Sec-Fetch-Mode": "no-cors",
+        "Sec-Fetch-Site": "cross-site",
+    },
+]
+
 
 def _build_vision_client() -> AsyncOpenAI:
     if EXPLICIT_VISION_OVERRIDE:
@@ -145,10 +162,36 @@ class ImageAnalysisToolkit:
         """
         parsed = urlparse(path)
 
-        # Remote URL – just return it (OpenAI fetches it directly)
+        # Remote URL – download it first so all backends receive a data URL.
         if parsed.scheme in ("http", "https"):
-            logger.debug(f"Using remote image URL: {path}")
-            return path
+            logger.debug(f"Downloading remote image URL: {path}")
+            def _download_remote_image() -> bytes:
+                errors = []
+                for idx, headers in enumerate(REMOTE_IMAGE_HEADERS, start=1):
+                    try:
+                        response = requests.get(
+                            path,
+                            timeout=self.timeout,
+                            headers=headers,
+                        )
+                        response.raise_for_status()
+                        content_type = response.headers.get("content-type", "").lower()
+                        if not content_type.startswith("image/"):
+                            raise ValueError(
+                                f"Remote URL did not return an image content-type: {content_type or 'unknown'}"
+                            )
+                        return response.content
+                    except Exception as exc:
+                        errors.append(f"attempt {idx}: {exc}")
+                raise RuntimeError(
+                    "Failed to download remote image with available request headers. "
+                    + " | ".join(errors)
+                )
+
+            data = await anyio.to_thread.run_sync(_download_remote_image)
+            mime = Image.open(io.BytesIO(data)).get_format_mimetype()
+            b64 = base64.b64encode(data).decode()
+            return f"data:{mime};base64,{b64}"
 
         # Local file – read & encode
         logger.debug(f"Encoding local image: {path}")

@@ -45,7 +45,14 @@ def load_memento_planner_cases(path: str | Path) -> list[dict[str, Any]]:
             plan = str(obj.get("target_text", obj.get("plan", ""))).strip()
             if not case or not plan:
                 continue
-            reward = int(obj.get("reward", 1 if str(obj.get("case_label", "")).lower() == "positive" else 0))
+            metadata = dict(obj.get("metadata") or {})
+            memory_type = str(metadata.get("memory_type") or obj.get("memory_type") or "").strip()
+            reward = int(
+                obj.get(
+                    "reward",
+                    1 if memory_type == "success_case" or str(obj.get("case_label", "")).lower() == "positive" else 0,
+                )
+            )
             rows.append(
                 {
                     "state_text": case,
@@ -56,7 +63,7 @@ def load_memento_planner_cases(path: str | Path) -> list[dict[str, Any]]:
                     "reward": reward,
                     "agent_role": agent_role or "planner",
                     "current_state_text": str(obj.get("current_state_text", case)).strip(),
-                    "metadata": obj.get("metadata", {"case_label": obj.get("case_label", "")}),
+                    "metadata": metadata or {"case_label": obj.get("case_label", "")},
                 }
             )
     if not rows:

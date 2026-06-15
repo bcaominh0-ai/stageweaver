@@ -1,0 +1,45 @@
+This bundle is a trimmed StageWeaver mainline package for DeepResearcher evaluation.
+
+Included:
+- client/
+- server/
+- memory/
+- infra/searxng/
+- data/deepresearcher_protocol/seen_train.jsonl
+- data/deepresearcher_protocol/seen_dev.jsonl
+- data/deepresearcher_protocol/ood_test.jsonl
+- dependency files (.env.template, pyproject.toml, requirements.txt, requirements-linux-cu128.txt, uv.lock)
+
+Not included:
+- historical result/ directories
+- refine-logs/
+- parallel launch and merge scripts
+- unrelated datasets such as GAIA and data/2023
+- historical runners and prefix baselines
+- split runner and output aggregation scripts
+
+Typical use:
+1. Create and activate a Python environment, then install dependencies.
+2. Start the local SearXNG service under infra/searxng/.
+3. Edit .env if your SEARXNG_HOST or judge endpoint differs.
+4. Collect seen_train traces, collect seen_dev traces, and build the stage bank under result/stageweaver/current/stage_bank/.
+5. Start one OpenAI-compatible model endpoint for Memento-Text, or use local direct backend for StageWeaver.
+6. Run eval_seen_dev_gate before eval_ood_test.
+
+Defaults:
+- memory mode: memento_text
+- agent backend: openai-compatible endpoints
+- semantic retriever device: cpu
+- default endpoint: http://127.0.0.1:8000/v1
+- default SearXNG endpoint: http://127.0.0.1:8080
+- default Memento-Text memory source: result/stageweaver/current/stage_bank/stage_bank_train.jsonl
+
+Semantic workflow stages:
+- collect_seen_train_traces
+- collect_seen_dev_traces
+- build_stageweaver_bank
+- train_append_sft
+- eval_seen_dev_gate
+- eval_ood_test
+
+The active comparison is Memento-Text versus StageWeaver only. See docs/CURRENT_PROTOCOL.md.

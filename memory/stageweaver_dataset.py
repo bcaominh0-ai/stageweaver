@@ -10,6 +10,7 @@ try:
     from .stageweaver_schema import (
         EXEC_STEP,
         StageTuple,
+        is_role_memory_item,
         load_stage_tuples,
         retrieval_text,
         serialize_role_conditioned_context,
@@ -20,6 +21,7 @@ except Exception:  # pragma: no cover
     from stageweaver_schema import (
         EXEC_STEP,
         StageTuple,
+        is_role_memory_item,
         load_stage_tuples,
         retrieval_text,
         serialize_role_conditioned_context,
@@ -45,8 +47,6 @@ def build_char_vocab(items: Iterable[StageTuple]) -> dict[str, int]:
         chars.update(item.current_state_text)
         chars.update(item.tool_memory_text)
         chars.update(item.subtask_memory_text)
-        for tool_name in item.available_tools:
-            chars.update(tool_name)
     vocab = {tok: idx for idx, tok in enumerate(SPECIAL_TOKENS)}
     for ch in sorted(chars):
         if ch not in vocab:
@@ -95,9 +95,9 @@ def retrieve_positive_neighbors(
         cand_role = tuple_role(cand)
         if cand.source_id == item.source_id or cand_role != item_role:
             continue
-        if item_role != "planner" and cand.stage != item.stage:
+        if cand.stage != item.stage:
             continue
-        if int(cand.reward) != 1:
+        if not is_role_memory_item(cand):
             continue
         overlap = _token_overlap(item_key, retrieval_text(cand))
         candidates.append((overlap, cand.source_id, cand.to_dict()))

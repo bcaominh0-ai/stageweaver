@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from memory.build_stageweaver_bank import build_tuples_from_traces
+from memory.build_stageweaver_bank import _failure_trace_prompt, build_tuples_from_traces, distill_failure_insight_tuples
+from memory.stageweaver_schema import EXEC_STEP, PLAN_REVISE, retrieval_text
 
 
 class ExecutorMemoryBankTests(unittest.TestCase):
@@ -37,17 +38,38 @@ class ExecutorMemoryBankTests(unittest.TestCase):
 
         tuples_ = build_tuples_from_traces(traces, result_rows=results, split_name="train")
         executor = [item for item in tuples_ if item.agent_role == "executor"][0]
+        planner = [item for item in tuples_ if item.agent_role == "planner"][0]
         trajectory = executor.metadata["executor_trajectory"]
+        serialized_planner = planner.to_dict(compact=True)
+        serialized_executor = executor.to_dict(compact=True)
 
-        self.assertTrue(executor.state_text.startswith("[EXECUTOR_QUERY]"))
+        self.assertEqual(planner.state_text, "Where was Ada Lovelace born?")
+        self.assertEqual(planner.current_state_text, "Where was Ada Lovelace born?")
+        self.assertEqual(planner.metadata["memory_type"], "success_case")
+        self.assertEqual(planner.metadata["origin"], "success")
+        self.assertEqual(planner.metadata["source_ids"], [planner.source_id])
+        self.assertEqual(executor.state_text, "Search for Ada Lovelace birthplace.")
         self.assertEqual(executor.current_state_text, executor.state_text)
         self.assertEqual(executor.metadata["raw_task_description"], "Search for Ada Lovelace birthplace.")
+        self.assertEqual(executor.metadata["memory_type"], "success_case")
+        self.assertEqual(executor.metadata["origin"], "success")
+        self.assertEqual(executor.metadata["source_ids"], [executor.source_id])
         self.assertIn("[EXECUTOR_CASE]", executor.metadata["executor_memory_text"])
         self.assertEqual(trajectory["task_description"], "Search for Ada Lovelace birthplace.")
         self.assertEqual(trajectory["final_output"], "London")
         self.assertFalse(trajectory["legacy_format"])
         self.assertEqual(trajectory["tool_calls"][0]["tool_name"], "search")
         self.assertIn("London", trajectory["tool_calls"][0]["observation_summary"])
+        self.assertNotIn("available_tools", serialized_planner)
+        self.assertNotIn("available_tools", serialized_executor)
+        for key in ("episode_id", "query_id", "cycle_id", "task_id", "reward", "dataset", "split", "source_id", "retrieved_ids"):
+            self.assertNotIn(key, serialized_planner)
+            self.assertNotIn(key, serialized_executor)
+        self.assertEqual(serialized_planner["metadata"], {"memory_type": "success_case"})
+        self.assertEqual(serialized_executor["metadata"]["memory_type"], "success_case")
+        self.assertIn("executor_memory_text", serialized_executor["metadata"])
+        self.assertNotIn("source_type", serialized_planner["metadata"])
+        self.assertNotIn("source_ids", serialized_planner["metadata"])
 
     def test_missing_correct_does_not_default_to_positive(self) -> None:
         traces = [
@@ -77,6 +99,98 @@ class ExecutorMemoryBankTests(unittest.TestCase):
 
         self.assertEqual(executor.reward, 0)
         self.assertEqual(executor.metadata["executor_trajectory"]["success_signal"], "unknown")
+
+    def test_failure_trace_distillation_creates_stage_attributed_insights(self) -> None:
+        traces = [
+            {
+                "question": "Which city links Ada Lovelace and the Analytical Engine?",
+                "task_id": "failed-trace-1",
+                "cycles": [
+                    {
+                        "planner_output": '{"plan":[{"id":1,"description":"Search Ada Lovelace Analytical Engine relation."}]}',
+                        "tasks": [
+                            {
+                                "task": {"id": 1, "description": "Search Ada Lovelace Analytical Engine relation."},
+                                "tool_calls": [{"resolved_name": "search", "arguments": {"query": "Ada Engine"}, "result_preview": "Ambiguous results"}],
+                                "result": "No clear evidence",
+                            }
+                        ],
+                    },
+                    {
+                        "planner_output": '{"plan":[{"id":1,"description":"Verify the bridge entity before final answer."}]}',
+                        "tasks": [],
+                    },
+                ],
+            }
+        ]
+        results = [{"question": "Which city links Ada Lovelace and the Analytical Engine?", "correct": False, "data_source": "unit"}]
+
+        insights = distill_failure_insight_tuples(
+            traces,
+            result_rows=results,
+            split_name="train",
+            llm_fn=lambda _prompt: """
+            {
+              "insights": [
+                {
+                  "agent_role": "planner",
+                  "stage": "PLAN_REVISE",
+                  "current_state": "should be ignored for planner",
+                  "insight": "Do not revise to final before verifying the bridge entity."
+                },
+                {
+                  "agent_role": "executor",
+                  "stage": "EXEC_STEP",
+                  "current_state": "Search Ada Lovelace Analytical Engine relation.",
+                  "insight": "Avoid broad ambiguous searches; add the suspected relation and verify evidence."
+                },
+                {
+                  "agent_role": "planner",
+                  "stage": "EXEC_STEP",
+                  "insight": "Invalid role-stage pair should be skipped."
+                }
+              ]
+            }
+            """,
+        )
+
+        self.assertEqual(len(insights), 2)
+        planner = [item for item in insights if item.agent_role == "planner"][0]
+        executor = [item for item in insights if item.agent_role == "executor"][0]
+        self.assertEqual(planner.stage, PLAN_REVISE)
+        self.assertEqual(planner.state_text, "Which city links Ada Lovelace and the Analytical Engine?")
+        self.assertEqual(planner.metadata["memory_type"], "insight")
+        self.assertEqual(planner.metadata["origin"], "failure")
+        self.assertEqual(planner.metadata["source_ids"], ["failed-trace-1"])
+        self.assertEqual(executor.stage, EXEC_STEP)
+        self.assertEqual(retrieval_text(executor), "Search Ada Lovelace Analytical Engine relation.")
+        self.assertIn("ambiguous searches", executor.target_text)
+
+    def test_failure_insight_prompt_guides_error_attribution(self) -> None:
+        prompt = _failure_trace_prompt(
+            {
+                "question": "Where should evidence be verified?",
+                "task_id": "failed-trace",
+                "cycles": [
+                    {
+                        "planner_output": '{"plan":[{"id":1,"description":"Search broad evidence."}]}',
+                        "tasks": [
+                            {
+                                "task": {"id": 1, "description": "Search broad evidence."},
+                                "tool_calls": [],
+                                "result": "No evidence",
+                            }
+                        ],
+                    }
+                ],
+            },
+            "failed-trace",
+        )
+        self.assertIn("decisive failure was introduced", prompt)
+        self.assertIn("earliest stage where changing behavior", prompt)
+        self.assertIn("what a successful trajectory would have done differently", prompt)
+        self.assertIn("causal difference between effective and ineffective behavior", prompt)
+        self.assertIn("Say what to avoid and what to do instead", prompt)
 
 
 if __name__ == "__main__":

@@ -32,8 +32,10 @@ try:
     from .stageweaver_schema import (
         EXEC_STEP,
         StageTuple,
+        is_role_memory_item,
         load_stage_tuples,
         retrieval_text,
+        role_memory_bucket_key,
         serialize_role_conditioned_context,
         tuple_question_text,
         tuple_role,
@@ -45,8 +47,10 @@ except Exception:  # pragma: no cover
     from stageweaver_schema import (
         EXEC_STEP,
         StageTuple,
+        is_role_memory_item,
         load_stage_tuples,
         retrieval_text,
+        role_memory_bucket_key,
         serialize_role_conditioned_context,
         tuple_question_text,
         tuple_role,
@@ -100,7 +104,7 @@ def _tuple_to_retriever_item(item: StageTuple) -> dict[str, Any]:
     return item.to_dict()
 
 
-def retrieve_positive_neighbors(
+def retrieve_role_memory_neighbors(
     item: StageTuple,
     retriever: SemanticRetriever,
     matched_k: int,
@@ -117,9 +121,9 @@ def retrieve_positive_neighbors(
         cand_role = tuple_role(cand)
         if cand.source_id == item.source_id or cand_role != item_role:
             continue
-        if item_role != "planner" and cand.stage != item.stage:
+        if cand.stage != item.stage:
             continue
-        if int(cand.reward) != 1:
+        if not is_role_memory_item(cand):
             continue
         candidates.append(cand.to_dict())
         if len(candidates) >= matched_k:
@@ -128,10 +132,7 @@ def retrieve_positive_neighbors(
 
 
 def _retrieval_bucket_key(item: StageTuple) -> tuple[str, str]:
-    role = tuple_role(item)
-    if role == "planner":
-        return ("PLANNER_ANY", "planner")
-    return (item.stage, role)
+    return role_memory_bucket_key(item)
 
 
 def _executor_visible_prompt(item: StageTuple) -> tuple[str, str]:
@@ -164,7 +165,7 @@ def build_examples(
     grouped_sizes: dict[tuple[str, str], int] = {}
     grouped_items: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for bank_item in retrieval_bank:
-        if int(bank_item.reward) != 1:
+        if not is_role_memory_item(bank_item):
             continue
         key = _retrieval_bucket_key(bank_item)
         grouped_items.setdefault(key, []).append(_tuple_to_retriever_item(bank_item))
@@ -188,7 +189,7 @@ def build_examples(
         if retriever is None:
             neighbors = []
         else:
-            neighbors = retrieve_positive_neighbors(
+            neighbors = retrieve_role_memory_neighbors(
                 item,
                 retriever,
                 matched_k=matched_k,
@@ -325,8 +326,17 @@ def _strip_generation(text: str) -> str:
     return text.replace("<|im_end|>", "").replace("<|endoftext|>", "").strip()
 
 
+def _strip_json_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.split("\n", 1)[-1]
+        if stripped.endswith("```"):
+            stripped = stripped[:-3]
+    return stripped.strip()
+
+
 def _planner_output_is_valid(text: str) -> bool:
-    stripped = _strip_generation(text)
+    stripped = _strip_json_fences(_strip_generation(text))
     if not stripped:
         return False
     if stripped.startswith("FINAL ANSWER:"):
@@ -335,7 +345,14 @@ def _planner_output_is_valid(text: str) -> bool:
         parsed = json.loads(stripped)
     except Exception:
         return False
-    return isinstance(parsed, dict) and isinstance(parsed.get("plan"), list)
+    if not isinstance(parsed, dict):
+        return False
+    if set(parsed.keys()) == {"plan"}:
+        return isinstance(parsed.get("plan"), list)
+    if set(parsed.keys()) == {"final"}:
+        final_payload = parsed.get("final")
+        return isinstance(final_payload, dict) and isinstance(final_payload.get("answer"), str)
+    return False
 
 
 @torch.no_grad()

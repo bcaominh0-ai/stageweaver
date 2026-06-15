@@ -7,8 +7,8 @@ that works without the camel package.
 # --------------------------------------------------------------------------- #
 #  Imports
 # --------------------------------------------------------------------------- #
-import asyncio, os, io, json, subprocess
-from typing import Tuple, Optional, List, Literal
+import asyncio, base64, os, io, json, subprocess, tempfile
+from typing import Tuple, Optional, List
 
 from loguru import logger
 from retry import retry
@@ -22,12 +22,11 @@ from image_tool import ask_question_about_image
 from excel_tool import ExcelToolkit
 # --- third‑party libs already used ------------------------------------------ #
 import assemblyai as aai
-from openai import OpenAI
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx import Presentation
 from PIL import Image
 from docx2markdown._docx_to_markdown import docx_to_markdown
-from chunkr_ai import Chunkr
+import requests
 import xmltodict
 import nest_asyncio
 nest_asyncio.apply()
@@ -48,6 +47,16 @@ EXPLICIT_AUDIO_TRANSCRIPTION_OVERRIDE = any(
     _env_nonempty(name)
     for name in ("AUDIO_TRANSCRIPTION_API_KEY", "AUDIO_TRANSCRIPTION_BASE_URL", "AUDIO_TRANSCRIPTION_MODEL")
 )
+SOMARK_MODEL = _env_nonempty("SOMARK_MODEL") or "somark"
+EXPLICIT_SOMARK_OVERRIDE = any(
+    _env_nonempty(name)
+    for name in ("SOMARK_API_KEY", "SOMARK_BASE_URL", "SOMARK_MODEL")
+)
+SOMARK_SUPPORTED_EXTENSIONS = {
+    ".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".jp2", ".dib",
+    ".ppm", ".pgm", ".pbm", ".gif", ".heic", ".heif", ".webp", ".xpm",
+    ".tga", ".dds", ".xbm",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -75,9 +84,8 @@ class DocumentProcessingToolkit:
     • **JSON, JSONL, JSON‑LD** – returns the parsed JSON structure.  
     • **XML** – converts to a Python dict (falls back to raw XML on error).  
     • **Word (.docx)** – converts the entire document to Markdown.  
-    • **PDF** – parses locally first with PyMuPDF4LLM, then Docling, then
-      PyPDF2. Chunkr is only used as an optional last resort when
-      CHUNKR_API_KEY is configured.
+    • **PDF or supported image formats** – attempts Somark extraction first,
+      then a plain-text PDF fallback if Somark fails.
 
     Typical downstream tasks include:
 
@@ -165,12 +173,8 @@ class DocumentProcessingToolkit:
             docx_to_markdown(document_path, md_path)
             return True, open(md_path, encoding="utf‑8").read()
 
-        # 10. PDF ------------------------------------------------------------------
-        if document_path.lower().endswith(".pdf"):
-            return self._extract_pdf(document_path)
-
-        # 11. Fallback — optional Chunkr for unsupported file types -----------------
-        return self._try_chunkr_then_fallback(document_path)
+        # 10. Fallback — optional Somark / PDF text ---------------------------------
+        return self._try_somark_then_fallback(document_path)
 
     # ------------------------------------------------------------------------- #
     #  helpers
@@ -220,21 +224,115 @@ class DocumentProcessingToolkit:
                     "AUDIO_TRANSCRIPTION_* override is active but AUDIO_TRANSCRIPTION_API_KEY is missing. "
                     "Fill AUDIO_TRANSCRIPTION_API_KEY for the configured transcription endpoint."
                 )
-            base_url = _env_nonempty("AUDIO_TRANSCRIPTION_BASE_URL") or "https://api.openai.com/v1"
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            with open(document_path, "rb") as audio_file:
-                transcript = client.audio.transcriptions.create(
-                    model=AUDIO_TRANSCRIPTION_MODEL,
-                    file=audio_file,
+            base_url = _env_nonempty("AUDIO_TRANSCRIPTION_BASE_URL") or "https://www.dmxapi.cn/v1"
+            endpoint = base_url.rstrip("/")
+            if not endpoint.endswith("/responses"):
+                endpoint = f"{endpoint}/responses"
+
+            upload_path = document_path
+            cleanup_path = None
+            audio_format = os.path.splitext(document_path)[1].lstrip(".").lower() or "wav"
+
+            # DMXAPI accepts wav/mp3 cleanly in practice. Convert m4a inputs to wav
+            # before upload so documents_tool keeps supporting local .m4a files.
+            if audio_format == "m4a":
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
+                    cleanup_path = tmp_file.name
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", document_path, cleanup_path],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
-            text = getattr(transcript, "text", None)
-            if isinstance(text, str) and text.strip():
-                return text.strip()
-            if isinstance(transcript, dict):
-                dict_text = transcript.get("text", "")
-                if isinstance(dict_text, str) and dict_text.strip():
-                    return dict_text.strip()
-            raise RuntimeError("Audio transcription completed but returned no text.")
+                upload_path = cleanup_path
+                audio_format = "wav"
+
+            try:
+                with open(upload_path, "rb") as audio_file:
+                    audio_b64 = base64.b64encode(audio_file.read()).decode("utf-8")
+
+                payload = {
+                    "model": AUDIO_TRANSCRIPTION_MODEL,
+                    "input": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_audio",
+                                    "input_audio": {
+                                        "data": f"data:;base64,{audio_b64}",
+                                        "format": audio_format,
+                                    },
+                                },
+                                {
+                                    "type": "text",
+                                    "text": "请转写这段音频，尽量逐字输出原始内容，不要添加解释。",
+                                },
+                            ],
+                        }
+                    ],
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                    "modalities": ["text"],
+                }
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": api_key,
+                }
+
+                response = requests.post(
+                    endpoint,
+                    headers=headers,
+                    json=payload,
+                    stream=True,
+                    timeout=120,
+                )
+                if not response.ok:
+                    raise RuntimeError(
+                        f"Audio transcription request failed with HTTP {response.status_code}: {response.text}"
+                    )
+
+                text_parts: List[str] = []
+                current_event = None
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    line_text = line.decode("utf-8").strip()
+                    if line_text.startswith("event: "):
+                        current_event = line_text[7:]
+                        continue
+                    if not line_text.startswith("data: "):
+                        continue
+                    data_str = line_text[6:]
+                    if data_str == "[DONE]":
+                        continue
+                    try:
+                        json_data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if current_event == "response.output_text.delta":
+                        delta = json_data.get("delta", "")
+                        if isinstance(delta, str) and delta:
+                            text_parts.append(delta)
+                        continue
+
+                    if current_event == "response.output_item.done":
+                        item = json_data.get("item", {})
+                        for content in item.get("content", []):
+                            if content.get("type") != "output_text":
+                                continue
+                            text = content.get("text", "")
+                            if isinstance(text, str) and text:
+                                text_parts.append(text)
+
+                transcript = "".join(text_parts).strip()
+                if transcript:
+                    return transcript
+                raise RuntimeError("Audio transcription completed but returned no text.")
+            finally:
+                if cleanup_path and os.path.exists(cleanup_path):
+                    os.remove(cleanup_path)
 
         assembly_key = os.getenv("ASSEMBLYAI_API_KEY")
         if not assembly_key:
@@ -249,62 +347,6 @@ class DocumentProcessingToolkit:
             raise RuntimeError(f"Transcription failed: {transcript.error}")
         return transcript.text
 
-    def _extract_pdf(self, path: str) -> Tuple[bool, str]:
-        errors = []
-
-        for name, extractor in self._pdf_extractors():
-            try:
-                text = extractor(path)
-                if self._has_enough_text(text):
-                    return True, text
-                errors.append(f"{name}: extracted too little text")
-            except ImportError:
-                errors.append(f"{name}: not installed")
-            except Exception as exc:
-                errors.append(f"{name}: {exc}")
-
-        if os.getenv("CHUNKR_API_KEY"):
-            try:
-                text = asyncio.run(self._extract_with_chunkr(path, output_format="markdown"))
-                if text.strip():
-                    return True, text
-                errors.append("Chunkr: empty output")
-            except Exception as exc:
-                errors.append(f"Chunkr: {exc}")
-
-        return False, "PDF extraction failed. Tried: " + " | ".join(errors)
-
-    def _pdf_extractors(self):
-        extractors = {
-            "pymupdf4llm": ("PyMuPDF4LLM", self._extract_pdf_with_pymupdf4llm),
-            "docling": ("Docling", self._extract_pdf_with_docling),
-            "pypdf2": ("PyPDF2", self._extract_pdf_with_pypdf2),
-        }
-        raw_order = os.getenv(
-            "PDF_PARSER_ORDER",
-            "pymupdf4llm,docling,pypdf2",
-        )
-        order = [item.strip().lower() for item in raw_order.split(",") if item.strip()]
-        return [extractors[name] for name in order if name in extractors]
-
-    @staticmethod
-    def _has_enough_text(text: str, min_chars: int | None = None) -> bool:
-        min_chars = min_chars or int(os.getenv("PDF_MIN_TEXT_CHARS", "200"))
-        return len("".join(text.split())) >= min_chars
-
-    @staticmethod
-    def _extract_pdf_with_pymupdf4llm(path: str) -> str:
-        import pymupdf4llm
-
-        return pymupdf4llm.to_markdown(path)
-
-    @staticmethod
-    def _extract_pdf_with_docling(path: str) -> str:
-        from docling.document_converter import DocumentConverter
-
-        doc = DocumentConverter().convert(path).document
-        return doc.export_to_markdown()
-
     @staticmethod
     def _extract_pdf_with_pypdf2(path: str) -> str:
         from PyPDF2 import PdfReader
@@ -314,40 +356,88 @@ class DocumentProcessingToolkit:
             for page in PdfReader(open(path, "rb")).pages
         )
 
-    def _try_chunkr_then_fallback(self, path: str) -> Tuple[bool, str]:
-        if not os.getenv("CHUNKR_API_KEY"):
-            return False, "Unsupported file type and CHUNKR_API_KEY is not configured."
-
+    def _try_somark_then_fallback(self, path: str) -> Tuple[bool, str]:
+        ext = os.path.splitext(path)[1].lower()
         try:
-            text = asyncio.run(
-                self._extract_with_chunkr(path, output_format="markdown")
-            )
+            if ext not in SOMARK_SUPPORTED_EXTENSIONS:
+                raise RuntimeError(f"Unsupported file type for Somark fallback: {ext or 'unknown'}")
+            if not _env_nonempty("SOMARK_API_KEY"):
+                raise RuntimeError("Somark fallback is not configured. Set SOMARK_API_KEY.")
+            text = self._extract_with_somark(path, output_format="markdown")
             return True, text
         except Exception as e:
-            logger.warning(f"Chunkr failed: {e}")
+            logger.warning(f"Somark failed: {e}")
             if path.lower().endswith(".pdf"):
                 try:
-                    from PyPDF2 import PdfReader
-                    text = "".join(
-                        p.extract_text() for p in PdfReader(open(path, "rb")).pages
-                    )
-                    return True, text
+                    text = self._extract_pdf_with_pypdf2(path)
+                    if text.strip():
+                        return True, text
+                    return False, f"PDF fallback produced no text after Somark failed: {e}"
                 except Exception as e2:
-                    return False, f"PDF fallback failed: {e2}"
-            return False, f"Unsupported file type or processing error: {e}"
+                    return False, f"PDF fallback failed after Somark error ({e}): {e2}"
+            return False, f"Unsupported file type or Somark processing error: {e}"
 
-    async def _extract_with_chunkr(
-        self, path: str, output_format: Literal["json", "markdown"] = "markdown"
-    ) -> str:
-        chunkr = Chunkr(api_key=os.getenv("CHUNKR_API_KEY"))
-        result = await chunkr.upload(path)
+    def _extract_with_somark(self, path: str, output_format: str = "markdown") -> str:
+        api_key = _env_nonempty("SOMARK_API_KEY")
+        if not api_key:
+            raise RuntimeError("Missing SOMARK_API_KEY.")
 
-        if result.status == "Failed":
-            raise RuntimeError(result.message)
+        base_url = _env_nonempty("SOMARK_BASE_URL") or "https://www.dmxapi.cn/v1/responses"
+        endpoint = base_url.rstrip("/")
+        if not endpoint.endswith("/responses"):
+            endpoint = f"{endpoint}/responses"
 
-        out_path = f"{os.path.basename(path)}.{ 'json' if output_format=='json' else 'md' }"
-        (result.json if output_format == "json" else result.markdown)(out_path)
-        return open(out_path, encoding="utf‑8").read()
+        with open(path, "rb") as f:
+            file_base64 = base64.b64encode(f.read()).decode("utf-8")
+
+        headers = {
+            "Authorization": api_key,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": SOMARK_MODEL,
+            "input": "json",
+            "file": file_base64,
+        }
+
+        response = requests.post(endpoint, headers=headers, json=payload, timeout=180)
+        if not response.ok:
+            raise RuntimeError(f"Somark request failed with HTTP {response.status_code}: {response.text}")
+
+        data = response.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"Somark returned code={data.get('code')}: {data.get('message') or data}")
+
+        result = ((data.get("data") or {}).get("result") or {})
+        outputs = result.get("outputs") or {}
+        json_output = outputs.get("json") or {}
+        if output_format == "json":
+            return json.dumps(json_output, ensure_ascii=False, indent=2)
+        rendered = self._render_somark_markdown(json_output)
+        if rendered.strip():
+            return rendered
+        raise RuntimeError("Somark returned no usable text blocks.")
+
+    @staticmethod
+    def _render_somark_markdown(parsed: dict) -> str:
+        page_texts: List[str] = []
+        for page in parsed.get("pages", []):
+            blocks = page.get("blocks", [])
+            block_texts: List[str] = []
+            for block in blocks:
+                if block.get("display") is False:
+                    continue
+                content = block.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    block_texts.append(content.strip())
+            page_text = "\n".join(block_texts).strip()
+            if page_text:
+                page_num = page.get("page_num")
+                if page_num is not None:
+                    page_texts.append(f"Page {page_num + 1}\n{page_text}")
+                else:
+                    page_texts.append(page_text)
+        return "\n\n".join(page_texts)
 
     def _unzip_file(self, zip_path: str) -> List[str]:
         dest = os.path.join(self.cache_dir, os.path.splitext(os.path.basename(zip_path))[0])

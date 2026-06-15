@@ -12,6 +12,10 @@ env/
 !.env.template
 *.egg-info/
 code_tool.log
+task_cache_dir/
+.agents/
+.codex/
+analysis/
 result/stageweaver/r*/
 result/
 outputs/

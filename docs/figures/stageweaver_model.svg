@@ -1,0 +1,210 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1050" viewBox="0 0 1800 1050" role="img" aria-labelledby="title desc">
+  <title id="title">StageWeaver framework figure</title>
+  <desc id="desc">A polished paper-style framework figure for StageWeaver, showing stage memory, latent weaving, and planner-executor reasoning with latent memory ribbons.</desc>
+  <defs>
+    <filter id="shadow" x="-18%" y="-18%" width="136%" height="136%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#172033" flood-opacity="0.12"/>
+    </filter>
+    <filter id="softShadow" x="-18%" y="-18%" width="136%" height="136%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#172033" flood-opacity="0.08"/>
+    </filter>
+    <linearGradient id="paperGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F7FAFD"/>
+    </linearGradient>
+    <linearGradient id="latentPlan" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#D9E9FF"/>
+      <stop offset="1" stop-color="#F0E9FF"/>
+    </linearGradient>
+    <linearGradient id="latentExec" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFE7B8"/>
+      <stop offset="1" stop-color="#E7F7F1"/>
+    </linearGradient>
+    <linearGradient id="latentRevise" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#E5F6EF"/>
+      <stop offset="1" stop-color="#F2ECFF"/>
+    </linearGradient>
+    <linearGradient id="centerGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F7F2FF"/>
+      <stop offset="0.55" stop-color="#F5FCF9"/>
+      <stop offset="1" stop-color="#FFF7E6"/>
+    </linearGradient>
+    <style>
+      .bg { fill: #FAFBFD; }
+      .page { fill: url(#paperGrad); stroke: #E1E7F0; stroke-width: 1.5; }
+      .title { fill: #172033; font: 760 42px Arial, Helvetica, sans-serif; letter-spacing: 0; }
+      .subtitle { fill: #5D6878; font: 400 18px Arial, Helvetica, sans-serif; }
+      .panel-title { fill: #1F2A3A; font: 720 24px Arial, Helvetica, sans-serif; }
+      .label { fill: #253043; font: 700 17px Arial, Helvetica, sans-serif; }
+      .text { fill: #465164; font: 400 15px Arial, Helvetica, sans-serif; }
+      .small { fill: #667386; font: 400 12.5px Arial, Helvetica, sans-serif; }
+      .tiny { fill: #717D90; font: 400 11.5px Arial, Helvetica, sans-serif; }
+      .mono { fill: #334155; font: 700 13px Menlo, Consolas, monospace; }
+      .card { fill: #FFFFFF; stroke: #CBD5E1; stroke-width: 1.35; filter: url(#shadow); }
+      .inner { fill: #F8FAFC; stroke: #D6DFEC; stroke-width: 1.2; }
+      .memory { fill: #EFF9F4; stroke: #77BE9E; stroke-width: 1.5; filter: url(#shadow); }
+      .weaver { fill: url(#centerGrad); stroke: #BCA6EA; stroke-width: 1.6; filter: url(#shadow); }
+      .planner { fill: #ECF5FF; stroke: #79A7EB; stroke-width: 1.55; filter: url(#softShadow); }
+      .executor { fill: #FFF2DA; stroke: #DCA94B; stroke-width: 1.55; filter: url(#softShadow); }
+      .revise { fill: #EDF9F3; stroke: #76BD9D; stroke-width: 1.55; filter: url(#softShadow); }
+      .answer { fill: #FFF0F0; stroke: #E5A0A0; stroke-width: 1.45; filter: url(#softShadow); }
+      .tool { fill: #EDF8FA; stroke: #83C4D2; stroke-width: 1.35; }
+      .chip { fill: #FFFFFF; stroke: #CBD5E1; stroke-width: 1.05; }
+      .tokP { fill: #E9F2FF; stroke: #7EA9E8; stroke-width: 1; }
+      .tokE { fill: #FFF0CB; stroke: #D8A040; stroke-width: 1; }
+      .tokR { fill: #E9F7F0; stroke: #67B69A; stroke-width: 1; }
+      .tokI { fill: #F2ECFF; stroke: #9C80DD; stroke-width: 1; }
+      .ribbonPlan { fill: none; stroke: url(#latentPlan); stroke-width: 22; stroke-linecap: round; opacity: 0.94; }
+      .ribbonExec { fill: none; stroke: url(#latentExec); stroke-width: 22; stroke-linecap: round; opacity: 0.94; }
+      .ribbonRevise { fill: none; stroke: url(#latentRevise); stroke-width: 22; stroke-linecap: round; opacity: 0.94; }
+      .ribbonEdge { fill: none; stroke: #FFFFFF; stroke-width: 3.2; stroke-linecap: round; opacity: 0.8; }
+      .loopTrack { fill: none; stroke: #D3DBE8; stroke-width: 16; stroke-linecap: round; }
+      .loopCore { fill: none; stroke: #263241; stroke-width: 2.2; stroke-linecap: round; stroke-dasharray: 1 13; }
+      .connector { stroke: #CBD5E1; stroke-width: 2; stroke-linecap: round; }
+      .num { fill: #FFFFFF; font: 760 14px Arial, Helvetica, sans-serif; }
+      .badge { fill: #253043; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1050"/>
+  <rect class="page" x="54" y="48" width="1692" height="928" rx="26"/>
+
+  <text class="title" x="96" y="112">StageWeaver</text>
+  <text class="subtitle" x="96" y="142">Weaving stage-specific latent memories into a hierarchical planner-executor agent.</text>
+
+  <!-- Column headings -->
+  <text class="panel-title" x="140" y="214">1. Stage Memory</text>
+  <text class="panel-title" x="708" y="214">2. Latent Weaving</text>
+  <text class="panel-title" x="1210" y="214">3. Agent Reasoning</text>
+
+  <!-- Left panel: memory bank -->
+  <g id="memory-bank">
+    <rect class="memory" x="120" y="244" width="430" height="610" rx="22"/>
+    <text class="label" x="158" y="290">Role-stage memory bank</text>
+    <text class="text" x="158" y="318">Successful traces and failure insights</text>
+    <text class="text" x="158" y="342">are stored by semantic stage.</text>
+
+    <rect class="inner" x="158" y="394" width="354" height="92" rx="14"/>
+    <text class="mono" x="186" y="432">PLAN_INIT</text>
+    <text class="small" x="186" y="458">planner decomposition patterns</text>
+    <rect class="tokP" x="420" y="416" width="20" height="20" rx="4"/>
+    <rect class="tokI" x="448" y="416" width="20" height="20" rx="4"/>
+    <rect class="tokR" x="476" y="416" width="20" height="20" rx="4"/>
+
+    <rect class="inner" x="158" y="526" width="354" height="92" rx="14"/>
+    <text class="mono" x="186" y="564">EXEC_STEP</text>
+    <text class="small" x="186" y="590">tool-use and verification patterns</text>
+    <rect class="tokE" x="420" y="548" width="20" height="20" rx="4"/>
+    <rect class="tokI" x="448" y="548" width="20" height="20" rx="4"/>
+    <rect class="tokP" x="476" y="548" width="20" height="20" rx="4"/>
+
+    <rect class="inner" x="158" y="658" width="354" height="92" rx="14"/>
+    <text class="mono" x="186" y="696">PLAN_REVISE</text>
+    <text class="small" x="186" y="722">repair and finalization patterns</text>
+    <rect class="tokR" x="420" y="680" width="20" height="20" rx="4"/>
+    <rect class="tokI" x="448" y="680" width="20" height="20" rx="4"/>
+    <rect class="tokP" x="476" y="680" width="20" height="20" rx="4"/>
+
+    <rect class="chip" x="158" y="788" width="156" height="34" rx="17"/>
+    <text class="mono" x="184" y="811">success_case</text>
+    <rect class="chip" x="330" y="788" width="104" height="34" rx="17"/>
+    <text class="mono" x="356" y="811">insight</text>
+  </g>
+
+  <!-- Center panel: latent weaving -->
+  <g id="latent-weaving">
+    <rect class="weaver" x="650" y="244" width="430" height="610" rx="26"/>
+    <text class="label" x="708" y="290">StageWeaver composer</text>
+    <text class="text" x="708" y="318">Retrieves by role + stage + state,</text>
+    <text class="text" x="708" y="342">then compresses memory into latents.</text>
+
+    <path class="ribbonPlan" d="M690 426 C760 376 866 376 1026 426"/>
+    <path class="ribbonEdge" d="M690 426 C760 376 866 376 1026 426"/>
+    <path class="ribbonExec" d="M690 558 C770 558 902 558 1026 558"/>
+    <path class="ribbonEdge" d="M690 558 C770 558 902 558 1026 558"/>
+    <path class="ribbonRevise" d="M690 690 C760 740 866 740 1026 690"/>
+    <path class="ribbonEdge" d="M690 690 C760 740 866 740 1026 690"/>
+
+    <rect class="card" x="750" y="470" width="232" height="176" rx="22"/>
+    <text class="mono" x="820" y="522">C_theta</text>
+    <text class="small" x="796" y="552">latent query tokens</text>
+    <g transform="translate(790,582)">
+      <circle cx="18" cy="18" r="10" fill="#8F7DDF"/>
+      <circle cx="50" cy="18" r="10" fill="#66B79B"/>
+      <circle cx="82" cy="18" r="10" fill="#D8A040"/>
+      <circle cx="114" cy="18" r="10" fill="#E89AA0"/>
+    </g>
+
+    <text class="mono" x="704" y="411">z_plan</text>
+    <text class="mono" x="704" y="543">z_exec</text>
+    <text class="mono" x="704" y="675">z_revise</text>
+
+    <rect class="chip" x="756" y="754" width="220" height="44" rx="22"/>
+    <text class="mono" x="794" y="781">append interface</text>
+  </g>
+
+  <!-- Right panel: planner-executor agent -->
+  <g id="agent">
+    <rect class="card" x="1160" y="244" width="500" height="610" rx="26"/>
+    <text class="label" x="1210" y="290">Planner-executor loop</text>
+    <text class="text" x="1210" y="318">The agent loop stays unchanged;</text>
+    <text class="text" x="1210" y="342">latents enter as side inputs.</text>
+
+    <path class="loopTrack" d="M1408 392 C1258 392 1236 544 1326 635 C1410 722 1572 672 1572 544 C1572 452 1506 392 1408 392"/>
+    <path class="loopCore" d="M1408 392 C1258 392 1236 544 1326 635 C1410 722 1572 672 1572 544 C1572 452 1506 392 1408 392"/>
+
+    <rect class="planner" x="1264" y="372" width="214" height="94" rx="18"/>
+    <text class="label" x="1324" y="410">Planner</text>
+    <text class="mono" x="1310" y="438">PLAN_INIT</text>
+
+    <rect class="executor" x="1264" y="596" width="214" height="94" rx="18"/>
+    <text class="label" x="1318" y="634">Executor</text>
+    <text class="mono" x="1322" y="662">EXEC_STEP</text>
+
+    <rect class="revise" x="1490" y="484" width="166" height="94" rx="18"/>
+    <text class="label" x="1532" y="522">Revise</text>
+    <text class="mono" x="1512" y="550">PLAN_REVISE</text>
+
+    <rect class="answer" x="1490" y="356" width="126" height="68" rx="16"/>
+    <text class="label" x="1522" y="386">Final</text>
+    <text class="label" x="1517" y="406">Answer</text>
+
+    <rect class="tool" x="1490" y="638" width="126" height="82" rx="16"/>
+    <text class="label" x="1525" y="672">Tools</text>
+    <circle cx="1530" cy="696" r="8" fill="#79A7EB"/>
+    <circle cx="1552" cy="696" r="8" fill="#DCA94B"/>
+    <circle cx="1574" cy="696" r="8" fill="#72BA9A"/>
+
+    <line class="connector" x1="1478" y1="642" x2="1490" y2="680"/>
+    <line class="connector" x1="1478" y1="420" x2="1490" y2="392"/>
+
+    <!-- Quiet latent insertion, rendered as bands not arrows -->
+    <path class="ribbonPlan" d="M1080 426 C1134 426 1194 418 1264 418"/>
+    <path class="ribbonExec" d="M1080 558 C1140 558 1200 640 1264 640"/>
+    <path class="ribbonRevise" d="M1080 690 C1210 690 1392 532 1490 532"/>
+  </g>
+
+  <!-- Numbered badges -->
+  <g id="badges">
+    <circle class="badge" cx="132" cy="258" r="16"/>
+    <text class="num" x="128" y="264">1</text>
+    <circle class="badge" cx="662" cy="258" r="16"/>
+    <text class="num" x="658" y="264">2</text>
+    <circle class="badge" cx="1172" cy="258" r="16"/>
+    <text class="num" x="1168" y="264">3</text>
+  </g>
+
+  <!-- Legend -->
+  <g id="legend">
+    <rect class="card" x="120" y="888" width="1540" height="72" rx="18"/>
+    <text class="label" x="158" y="932">Notation</text>
+    <rect class="tokP" x="290" y="912" width="22" height="22" rx="5"/>
+    <text class="small" x="326" y="929">planner-stage memory</text>
+    <rect class="tokE" x="510" y="912" width="22" height="22" rx="5"/>
+    <text class="small" x="546" y="929">executor-stage memory</text>
+    <rect class="tokI" x="740" y="912" width="22" height="22" rx="5"/>
+    <text class="small" x="776" y="929">success case / insight</text>
+    <path class="ribbonPlan" d="M1014 923 H1110"/>
+    <text class="small" x="1130" y="929">latent memory ribbon appended to prompt embeddings</text>
+  </g>
+</svg>

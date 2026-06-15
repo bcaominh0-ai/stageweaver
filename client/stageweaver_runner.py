@@ -27,14 +27,25 @@ if str(MEMORY_DIR) not in sys.path:
     sys.path.insert(0, str(MEMORY_DIR))
 
 try:  # script and module execution compatibility
-    from client.agent_local_server import DEFAULT_GENERATION_HEADROOM, HierarchicalClient, _resolve_local_model_path  # type: ignore  # noqa: E402
+    from client.agent_local_server import (  # type: ignore  # noqa: E402
+        DEFAULT_EXECUTOR_GENERATION_HEADROOM,
+        DEFAULT_GENERATION_HEADROOM,
+        HierarchicalClient,
+        _resolve_local_model_path,
+    )
 except Exception:  # pragma: no cover
-    from agent_local_server import DEFAULT_GENERATION_HEADROOM, HierarchicalClient, _resolve_local_model_path  # type: ignore  # noqa: E402
+    from agent_local_server import (  # type: ignore  # noqa: E402
+        DEFAULT_EXECUTOR_GENERATION_HEADROOM,
+        DEFAULT_GENERATION_HEADROOM,
+        HierarchicalClient,
+        _resolve_local_model_path,
+    )
 from memory.stageweaver_composer import StageWeaverComposer, StageWeaverComposerConfig  # noqa: E402
 from memory.stageweaver_projector import StageWeaverProjector  # noqa: E402
 from memory.stageweaver_schema import (  # noqa: E402
     StageTuple,
     build_executor_current_state,
+    is_role_memory_item,
     load_stage_tuples,
     normalize_optional_text,
     retrieval_query_text,
@@ -60,8 +71,7 @@ ACTIVE_TOOL_SCRIPTS = [
 
 ACTIVE_MEMORY_MODES = {"memento_text", "stageweaver", "none"}
 
-JUDGE_PROMPT_TPL = """You will be given a question and its ground truth answer list where each item can be a ground truth answer. Provided a pred_answer, you need to judge if the pred_answer correctly answers the question based on the ground truth answer list.
-You should first give your rationale for the judgement, and then give your judgement result (i.e., correct or incorrect).
+JUDGE_PROMPT_TPL = """You will be given a question and its ground truth answer list where each item can be a ground truth answer. Provided a pred_answer, judge if the pred_answer correctly answers the question based on the ground truth answer list.
 
 Here is the criteria for the judgement:
 1. The pred_answer doesn't need to be exactly the same as any of the ground truth answers, but should be semantically same for the question.
@@ -71,11 +81,10 @@ question: {question}
 ground truth answers: {gt_answer}
 pred_answer: {pred_answer}
 
-The output should in the following json format:
-{{
-  "rationale": "...",
-  "judgement": "correct" | "incorrect"
-}}
+Output exactly one lowercase word and nothing else:
+correct
+or
+incorrect
 """
 
 
@@ -110,8 +119,11 @@ def _exact_match(pred: str, gt_values: list[str]) -> bool:
 def _safe_token_trim(text: str, token_budget: int, model: str = "gpt-4.1") -> str:
     try:
         enc = tiktoken.encoding_for_model(model)
-    except KeyError:
-        enc = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        try:
+            enc = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            return " ".join(text.split()[:token_budget]).strip()
     toks = enc.encode(text)
     if len(toks) <= token_budget:
         return text
@@ -123,8 +135,11 @@ def _token_count(text: str, model: str = "gpt-4.1") -> int:
         return 0
     try:
         enc = tiktoken.encoding_for_model(model)
-    except KeyError:
-        enc = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        try:
+            enc = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            return len(text.split())
     return len(enc.encode(text))
 
 
@@ -149,7 +164,7 @@ def _tuple_to_memory_case(item: StageTuple) -> dict[str, Any]:
         "target_text": str(item.target_text).strip(),
         "source_id": str(item.source_id),
         "stage": str(item.stage),
-        "reward": int(item.reward),
+        "reward": 1 if is_role_memory_item(item) else int(item.reward),
         "agent_role": role,
         "current_state_text": str(item.current_state_text).strip(),
         "metadata": dict(item.metadata),
@@ -158,6 +173,10 @@ def _tuple_to_memory_case(item: StageTuple) -> dict[str, Any]:
 
 def _stageweaver_positive_memory_cases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [dict(item) for item in items if int(item.get("reward", 0)) == 1]
+
+
+def _stageweaver_role_memory_cases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(item) for item in items if is_role_memory_item(item)]
 
 
 def _memory_key(item: dict[str, Any]) -> str:
@@ -192,6 +211,29 @@ def _strip_fences(text: str) -> str:
         return text.strip()
     match = re.search(r"{[\s\S]*}", text)
     return match.group(0) if match else text
+
+
+def _format_exception(exc: BaseException) -> str:
+    message = str(exc).strip()
+    exc_type = type(exc).__name__
+    return f"{exc_type}: {message}" if message else exc_type
+
+
+def _is_quota_exception(exc: BaseException) -> bool:
+    text = _format_exception(exc)
+    return any(
+        marker in text
+        for marker in (
+            "insufficient_user_quota",
+            "用户额度不足",
+            "预扣费额度失败",
+            "Arrearage",
+            "overdue-payment",
+            "account is in good standing",
+            "invalid_parameter_error",
+            "parameter of the code model must be in JSON format",
+        )
+    )
 
 
 def build_memento_text_prompt(query: str, retrieved_hits: list[dict[str, Any]]) -> str:
@@ -278,9 +320,11 @@ def _serialize_role_conditioned_source(
     role: str,
     current_state: str,
     retrieved_cases_text: str,
+    stage: str = "",
 ) -> str:
     return serialize_role_conditioned_source(
         role=role,
+        stage=stage,
         current_state=current_state,
         retrieved_cases_text=retrieved_cases_text,
     )
@@ -306,6 +350,33 @@ def _merged_stage_mode_label(summaries: list[dict[str, Any]], requested_stage_mo
     return "mixed"
 
 
+def _generation_cap_tag(planner_max_new_tokens: int, executor_max_new_tokens: int) -> str:
+    parts: list[str] = []
+    if int(planner_max_new_tokens) != int(DEFAULT_GENERATION_HEADROOM):
+        parts.append(f"pmax{planner_max_new_tokens}")
+    if int(executor_max_new_tokens) != int(DEFAULT_EXECUTOR_GENERATION_HEADROOM):
+        parts.append(f"emax{executor_max_new_tokens}")
+    return ("_" + "_".join(parts)) if parts else ""
+
+
+def _cli_option_present(argv: list[str], option: str) -> bool:
+    return any(arg == option or arg.startswith(f"{option}=") for arg in argv[1:])
+
+
+def _apply_trace_bank_teacher_defaults(args: argparse.Namespace, argv: list[str]) -> None:
+    if not args.diagnostic_trace_bank or "none" not in args.modes:
+        return
+    for option, attr, env_name in (
+        ("--openai_base_url", "openai_base_url", "TEACHER_BASE_URL"),
+        ("--openai_api_key", "openai_api_key", "TEACHER_API_KEY"),
+        ("--meta_model", "meta_model", "TEACHER_MODEL"),
+        ("--exec_model", "exec_model", "TEACHER_MODEL"),
+    ):
+        value = os.getenv(env_name, "").strip()
+        if value and not _cli_option_present(argv, option):
+            setattr(args, attr, value)
+
+
 async def llm_judge(
     judge_client: AsyncOpenAI,
     judge_model: str,
@@ -321,15 +392,19 @@ async def llm_judge(
     resp = await judge_client.chat.completions.create(
         model=judge_model,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=300,
+        max_tokens=5,
     )
     content = resp.choices[0].message.content or ""
     content = _strip_fences(content)
-    data = json.loads(content)
-    judgement = str(data.get("judgement", "incorrect")).lower().strip()
+    judgement = content.lower().strip().strip(".")
+    rationale = ""
+    if judgement not in {"correct", "incorrect"}:
+        data = json.loads(content)
+        judgement = str(data.get("judgement", "incorrect")).lower().strip()
+        rationale = str(data.get("rationale", ""))
     if judgement not in {"correct", "incorrect"}:
         raise ValueError(f"invalid judge label: {judgement}")
-    return {"judgement": judgement, "rationale": str(data.get("rationale", ""))}
+    return {"judgement": judgement, "rationale": rationale}
 
 
 class StageWeaverComposerRuntime:
@@ -391,7 +466,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
     stageweaver_grouped_retrievers: dict[tuple[str, str], SemanticRetriever] = {}
     judge_client = AsyncOpenAI(api_key=args.judge_api_key, base_url=args.judge_base_url)
     if mode == "stageweaver":
-        stageweaver_tuples = [item for item in load_stage_tuples(Path(args.stageweaver_bank_jsonl)) if int(item.reward) == 1]
+        stageweaver_tuples = [item for item in load_stage_tuples(Path(args.stageweaver_bank_jsonl)) if is_role_memory_item(item)]
         override_composer_model = ""
         if args.stageweaver_composer_model or args.stageweaver_composer_model_path:
             try:
@@ -409,11 +484,11 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
         )
         memory_cases = [_tuple_to_memory_case(item) for item in stageweaver_tuples]
         if not memory_cases:
-            raise RuntimeError("stageweaver mode requires at least one positive memory case in the stageweaver bank.")
+            raise RuntimeError("stageweaver mode requires at least one role memory case in the stageweaver bank.")
     if mode in {"memento_text", "stageweaver"}:
         if mode == "stageweaver":
             grouped_items: dict[tuple[str, str], list[dict[str, Any]]] = {}
-            for item in _stageweaver_positive_memory_cases(memory_cases):
+            for item in _stageweaver_role_memory_cases(memory_cases):
                 key = (str(item.get("stage", "")), str(item.get("agent_role", "")))
                 grouped_items.setdefault(key, []).append(dict(item))
             for key, items in grouped_items.items():
@@ -442,7 +517,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
                 executor_cases = [
                     _tuple_to_memory_case(item)
                     for item in load_stage_tuples(executor_memory_path)
-                    if int(item.reward) == 1 and tuple_role(item) == "executor"
+                    if is_role_memory_item(item) and tuple_role(item) == "executor"
                 ]
                 require_positive_executor_cases(executor_cases, executor_memory_path)
                 if executor_cases:
@@ -460,15 +535,11 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
     os.environ["DIRECT_API_KEY"] = args.openai_api_key
     os.environ["DIRECT_BASE_URL"] = args.openai_base_url
 
-    planner_cap_tag = (
-        f"_pmax{args.planner_max_new_tokens}"
-        if int(args.planner_max_new_tokens) != int(DEFAULT_GENERATION_HEADROOM)
-        else ""
-    )
+    generation_cap_tag = _generation_cap_tag(args.planner_max_new_tokens, args.executor_max_new_tokens)
     if mode == "stageweaver":
-        run_tag = f"{mode}_{args.tool_profile}_{effective_stage_mode}_{args.latent_interface}{planner_cap_tag}"
+        run_tag = f"{mode}_{args.tool_profile}_{effective_stage_mode}_{args.latent_interface}{generation_cap_tag}"
     else:
-        run_tag = f"{mode}_{args.tool_profile}_{effective_stage_mode}{planner_cap_tag}"
+        run_tag = f"{mode}_{args.tool_profile}_{effective_stage_mode}{generation_cap_tag}"
     if args.trace_jsonl and len(args.modes) == 1:
         if args.trace_jsonl == "__AUTO_TRACE__":
             trace_path = Path(args.output_dir) / f"trace_{run_tag}.jsonl"
@@ -595,7 +666,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
                         text_memory = ""
                         stage_name = "PLAN_INIT" if int(context["cycle"]) == 0 else "PLAN_REVISE"
                         planner_query = str(context.get("query", "")).strip()
-                        current_state = _latest_planner_output(context["trace"]) or planner_query
+                        current_state = planner_query
                         retrieval_query = _stageweaver_retrieval_query(
                             role="planner",
                             question=planner_query,
@@ -606,7 +677,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
                             stage_name,
                         )
                         hits = grouped_retriever.retrieve(retrieval_query, top_k=args.memory_top_k)
-                        retrieved = _stageweaver_positive_memory_cases([dict(hit["item"]) for hit in hits])
+                        retrieved = _stageweaver_role_memory_cases([dict(hit["item"]) for hit in hits])
                         rendered = render_positive_output_memory(
                             retrieved,
                             budget_tokens=args.memory_budget_tokens,
@@ -615,6 +686,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
                         )
                         source_text = _serialize_role_conditioned_source(
                             role="planner",
+                            stage=stage_name,
                             current_state=normalize_optional_text(current_state) or planner_query or "[NONE]",
                             retrieved_cases_text=rendered["text"],
                         )
@@ -646,28 +718,10 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
 
                     async def _executor_memory_callback(context: dict[str, Any]) -> dict[str, Any]:
                         task = dict(context["task"])
-                        task_trace = dict(context.get("task_trace", {}))
-                        tool_history = [dict(call) for call in task_trace.get("tool_calls", []) if isinstance(call, dict)]
-                        latest_observation = ""
-                        if tool_history:
-                            latest = tool_history[-1]
-                            latest_observation = str(latest.get("result_preview") or latest.get("error") or "")
-                        failed_calls = [call for call in tool_history if call.get("error")]
-                        repeated_calls = [call for call in tool_history if call.get("reused_result")]
                         text_memory = ""
                         executor_query = str(context.get("query", "")).strip()
                         task_description = str(task.get("description", "")).strip() or executor_query
-                        current_state = build_executor_current_state(
-                            task_description=task_description,
-                            tool_history=tool_history,
-                            latest_observation=latest_observation,
-                            failed_calls=failed_calls,
-                            repeated_calls=repeated_calls,
-                            partial_result=str(task_trace.get("result") or ""),
-                            max_chars=args.executor_state_max_chars,
-                            obs_max_chars=args.executor_obs_max_chars,
-                            tool_history_k=args.executor_tool_history_k,
-                        )
+                        current_state = task_description
                         retrieval_query = _stageweaver_retrieval_query(
                             role="executor",
                             question=executor_query,
@@ -677,7 +731,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
                         if grouped_retriever is None:
                             raise RuntimeError("stageweaver executor retriever missing for key=('EXEC_STEP', 'executor')")
                         hits = grouped_retriever.retrieve(retrieval_query, top_k=executor_top_k)
-                        retrieved = _stageweaver_positive_memory_cases([dict(hit["item"]) for hit in hits])
+                        retrieved = _stageweaver_role_memory_cases([dict(hit["item"]) for hit in hits])
                         rendered = render_positive_output_memory(
                             retrieved,
                             budget_tokens=args.memory_budget_tokens,
@@ -686,6 +740,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
                         )
                         source_text = _serialize_role_conditioned_source(
                             role="executor",
+                            stage="EXEC_STEP",
                             current_state=normalize_optional_text(current_state) or executor_query or "[NONE]",
                             retrieved_cases_text=rendered["text"],
                         )
@@ -835,6 +890,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
                             planner_prefix_injection_mode=args.latent_interface,
                             executor_prefix_injection_mode=args.latent_interface,
                             planner_max_new_tokens=args.planner_max_new_tokens,
+                            executor_max_new_tokens=args.executor_max_new_tokens,
                             planner_memory_callback=planner_memory_callback,
                             executor_memory_callback=executor_memory_callback,
                             executor_memory_refresh=args.executor_memory_refresh,
@@ -854,6 +910,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
                         planner_prefix_injection_mode=args.latent_interface,
                         executor_prefix_injection_mode=args.latent_interface,
                         planner_max_new_tokens=args.planner_max_new_tokens,
+                        executor_max_new_tokens=args.executor_max_new_tokens,
                         planner_memory_callback=planner_memory_callback,
                         executor_memory_callback=executor_memory_callback,
                         executor_memory_refresh=args.executor_memory_refresh,
@@ -901,6 +958,32 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
                     "executor_retrieved_cases": query_memory_stats["executor_retrieved_cases"],
                 }
             except Exception as exc:
+                if isinstance(exc, asyncio.TimeoutError):
+                    print(
+                        json.dumps(
+                            {
+                                "fatal_error": "query_timeout",
+                                "index": idx,
+                                "error": _format_exception(exc),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        file=sys.stderr,
+                    )
+                    raise
+                if _is_quota_exception(exc):
+                    print(
+                        json.dumps(
+                            {
+                                "fatal_error": "quota_exhausted",
+                                "index": idx,
+                                "error": _format_exception(exc),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        file=sys.stderr,
+                    )
+                    raise
                 planner_tokens = max(_token_count(planner_memory_prompt, model=args.meta_model), query_memory_stats["planner_text_tokens"])
                 executor_tokens = max(_token_count(executor_memory_prompt, model=args.exec_model), query_memory_stats["executor_text_tokens"])
                 total += 1
@@ -921,7 +1004,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
                     "pred_answer": "",
                     "ground_truth": gt_values,
                     "correct": False,
-                    "error": str(exc),
+                    "error": _format_exception(exc),
                     "judge_mode": args.judge_mode,
                     "memory_prompt_chars": len(memory_prompt),
                     "planner_memory_chars": max(len(planner_memory_prompt), query_memory_stats["planner_text_chars"]),
@@ -949,6 +1032,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
         "latent_interface": args.latent_interface,
         "executor_memory_refresh": args.executor_memory_refresh,
         "planner_max_new_tokens": args.planner_max_new_tokens,
+        "executor_max_new_tokens": args.executor_max_new_tokens,
         "meta_model": args.meta_model,
         "exec_model": args.exec_model,
         "judge_mode": args.judge_mode,
@@ -989,19 +1073,16 @@ async def main_async(args: argparse.Namespace) -> None:
         "latent_interface": args.latent_interface,
         "executor_memory_refresh": args.executor_memory_refresh,
         "planner_max_new_tokens": args.planner_max_new_tokens,
+        "executor_max_new_tokens": args.executor_max_new_tokens,
         "semantic_model_id": args.semantic_model_id,
         "summaries": all_summaries,
     }
     mode_sig = "-".join(args.modes)
-    planner_cap_tag = (
-        f"_pmax{args.planner_max_new_tokens}"
-        if int(args.planner_max_new_tokens) != int(DEFAULT_GENERATION_HEADROOM)
-        else ""
-    )
+    generation_cap_tag = _generation_cap_tag(args.planner_max_new_tokens, args.executor_max_new_tokens)
     summary_name = (
-        f"summary_all_{mode_sig}_{args.tool_profile}_{merged_stage_mode}_{args.latent_interface}{planner_cap_tag}.json"
+        f"summary_all_{mode_sig}_{args.tool_profile}_{merged_stage_mode}_{args.latent_interface}{generation_cap_tag}.json"
         if any(mode == "stageweaver" for mode in args.modes)
-        else f"summary_all_{mode_sig}_{args.tool_profile}_{merged_stage_mode}{planner_cap_tag}.json"
+        else f"summary_all_{mode_sig}_{args.tool_profile}_{merged_stage_mode}{generation_cap_tag}.json"
     )
     (output_dir / summary_name).write_text(
         json.dumps(merged, ensure_ascii=False, indent=2),
@@ -1117,7 +1198,13 @@ def parse_args() -> argparse.Namespace:
         "--planner_max_new_tokens",
         type=int,
         default=DEFAULT_GENERATION_HEADROOM,
-        help="Planner max_new_tokens cap. Lower this for append diagnostics without changing executor generation.",
+        help="Planner max_new_tokens cap. Lower this for trace-bank diagnostics or provider TPM limits.",
+    )
+    parser.add_argument(
+        "--executor_max_new_tokens",
+        type=int,
+        default=DEFAULT_EXECUTOR_GENERATION_HEADROOM,
+        help="Executor max_new_tokens cap. Lower this together with planner_max_new_tokens for provider TPM limits.",
     )
     parser.add_argument("--query_timeout_sec", type=int, default=180, help="Per-query timeout in seconds; <=0 disables timeout.")
     parser.add_argument("--resume", action="store_true", help="Append missing indices to an existing results JSONL instead of overwriting it.")
@@ -1132,8 +1219,11 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.memory_mode:
         args.modes = [args.memory_mode]
+    _apply_trace_bank_teacher_defaults(args, sys.argv)
     if int(args.planner_max_new_tokens) <= 0:
         raise SystemExit("--planner_max_new_tokens must be > 0.")
+    if int(args.executor_max_new_tokens) <= 0:
+        raise SystemExit("--executor_max_new_tokens must be > 0.")
     allowed_modes = ACTIVE_MEMORY_MODES
     for mode in args.modes:
         if mode not in allowed_modes:

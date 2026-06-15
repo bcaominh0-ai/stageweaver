@@ -6,7 +6,7 @@
 - `client/agent_local_server.py`: planner/executor runtime with append latent support and MCP tool wiring.
 - `memory/stageweaver_schema.py`: StageWeaver tuple schema and role-conditioned retrieval text.
 - `memory/build_stageweaver_bank.py`: converts current traces into StageWeaver stage tuples.
-- `memory/stageweaver_serializers.py`: serializes retrieved positive outputs for latent composition.
+- `memory/stageweaver_serializers.py`: serializes retrieved role memory for latent composition.
 - `memory/stageweaver_composer.py`: LatentMem-style composer.
 - `memory/stageweaver_projector.py`: composer-to-agent hidden-size projector.
 - `memory/stageweaver_dataset.py`: current composer SFT dataset construction.
