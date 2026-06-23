@@ -13,6 +13,7 @@ Dependencies
 #  Imports
 # --------------------------------------------------------------------------- #
 
+import asyncio
 import os
 from typing import Any, Dict, List, Optional
 
@@ -32,10 +33,12 @@ mcp = FastMCP("search")
 #  Constants & simple validators
 # --------------------------------------------------------------------------- #
 
-DEFAULT_HOST = os.getenv("SEARXNG_HOST") or os.getenv("SEARXNG_URL") or "http://127.0.0.1:8080"
+DEFAULT_HOST = os.getenv("SEARXNG_HOST") or os.getenv("SEARXNG_URL") or "http://127.0.0.1:18080"
 DEFAULT_CATEGORY = "general"
 SAFE_SEARCH_LEVELS = {0, 1, 2}
 VALID_TIME_RANGES = {"day", "week", "month", "year"}
+SEARCH_TIMEOUT = float(os.getenv("SEARXNG_SEARCH_TIMEOUT_SEC", "20"))
+SEARCH_ATTEMPTS = max(1, int(os.getenv("SEARXNG_SEARCH_ATTEMPTS", "3")))
 
 
 def _check_safe(level: int) -> None:
@@ -98,13 +101,33 @@ async def search(
 
     url = f"{host.rstrip('/')}/search"
 
-    async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": "fastmcp-search"}) as client:
-        try:
-            r = await client.get(url, params=params)
-            r.raise_for_status()
-            results = r.json().get("results", [])[: num_results]
-        except Exception as exc:  # network / JSON / key errors
-            return [{"title": "Search error", "link": "", "snippet": str(exc)}]
+    async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT, headers={"User-Agent": "fastmcp-search"}) as client:
+        errors: list[str] = []
+        for attempt in range(1, SEARCH_ATTEMPTS + 1):
+            try:
+                r = await client.get(url, params=params)
+                r.raise_for_status()
+                payload = r.json()
+                results = payload.get("results", [])[: num_results]
+                if results:
+                    break
+
+                unavailable = payload.get("unresponsive_engines", [])
+                detail = f"; unresponsive engines: {unavailable[:6]}" if unavailable else ""
+                raise RuntimeError(f"SearXNG returned no results{detail}")
+            except Exception as exc:  # network / JSON / upstream engine errors
+                errors.append(f"attempt {attempt}: {exc}")
+                if attempt < SEARCH_ATTEMPTS:
+                    await asyncio.sleep(min(2 ** (attempt - 1), 4))
+        else:
+            results = []
+
+        if not results:
+            return [{
+                "title": "Search error",
+                "link": "",
+                "snippet": " | ".join(errors),
+            }]
 
     return [
         {

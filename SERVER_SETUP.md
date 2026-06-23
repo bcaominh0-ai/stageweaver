@@ -2,19 +2,19 @@
 
 ## Project Path
 
-- Project root: `/home/ubuntu/projects/stageweaver`
+- Project root: `/data/xiezhen/stageweaver`
 
 ## Python Environments
 
-- `.venv-cu128`: main StageWeaver validation and RTX 5090 CUDA environment.
-  - Uses `torch==2.7.0+cu128`.
-  - Verified with RTX 5090 compute capability `(12, 0)` and a small CUDA matmul.
+- `.venv-cu126`: main StageWeaver validation and A800 CUDA environment.
+  - Uses `torch==2.7.0+cu126`.
+  - Validate all eight A800 devices and a small CUDA matmul with `scripts/linux_preflight.sh`.
 
 Activate:
 
 ```bash
-cd /home/ubuntu/projects/stageweaver
-source .venv-cu128/bin/activate
+cd /data/xiezhen/stageweaver
+source .venv-cu126/bin/activate
 ```
 
 ## SearXNG
@@ -22,53 +22,18 @@ source .venv-cu128/bin/activate
 SearXNG is deployed from:
 
 ```bash
-/home/ubuntu/projects/stageweaver/infra/searxng/docker-compose.yml
+/data/xiezhen/stageweaver/infra/searxng/docker-compose.yml
 ```
 
-Current deployment uses Docker `host` network.
-
-Reason: the server proxy is a host-local proxy:
-
-```bash
-http_proxy=http://127.0.0.1:7891
-https_proxy=http://127.0.0.1:7891
-```
-
-With host networking, the SearXNG container can reach the host proxy at `127.0.0.1:7891`. Do not switch SearXNG to Docker bridge networking unless container access to the host proxy has been separately confirmed. In Docker bridge mode, `127.0.0.1` inside the container is the container itself, not the host, so `http://127.0.0.1:7891` would not reach the host proxy.
+Current deployment uses Docker `host` network and binds only to
+`127.0.0.1:18080`. Port 8080 is occupied by another SearXNG deployment on
+this server. No outbound proxy is configured for StageWeaver SearXNG.
 
 Check SearXNG:
 
 ```bash
 docker ps --filter name=stageweaver-searxng
-curl -sS --max-time 10 "http://127.0.0.1:8080/search?q=openai&format=json" | head -c 500
-```
-
-## Temporary 8080 Protection
-
-SearXNG currently listens on `*:8080` because it uses host networking. Temporary `iptables` and `ip6tables` rules block non-localhost access to port 8080.
-
-These rules are not persistent. After a server reboot or firewall reset, re-add them or close port 8080 in the cloud security group.
-
-Apply temporary protection:
-
-```bash
-sudo iptables -I INPUT -p tcp --dport 8080 ! -s 127.0.0.1 -j DROP
-sudo ip6tables -I INPUT -p tcp --dport 8080 ! -s ::1 -j DROP
-```
-
-Verify:
-
-```bash
-curl -sS --max-time 10 "http://127.0.0.1:8080/search?q=openai&format=json" | head -c 500
-sudo iptables -S | grep 8080 || true
-sudo ip6tables -S | grep 8080 || true
-```
-
-Expected rule summary:
-
-```text
--A INPUT ! -s 127.0.0.1/32 -p tcp -m tcp --dport 8080 -j DROP
--A INPUT ! -s ::1/128 -p tcp -m tcp --dport 8080 -j DROP
+curl -sS --max-time 15 "http://127.0.0.1:18080/search?q=openai&format=json" | head -c 500
 ```
 
 ## Environment Template
@@ -96,7 +61,7 @@ AUDIO_TRANSCRIPTION_MODEL=qwen3-omni-flash-all
 SOMARK_BASE_URL=https://www.dmxapi.cn/v1/responses
 SOMARK_API_KEY=
 SOMARK_MODEL=somark
-SEARXNG_HOST=http://127.0.0.1:8080
+SEARXNG_HOST=http://127.0.0.1:18080
 ```
 
 For `server/documents_tool.py` audio transcription, configure an OpenAI-compatible
@@ -113,8 +78,8 @@ configured through `SOMARK_BASE_URL`, with `SOMARK_MODEL` defaulting to `somark`
 Do not run this until `.env` has been filled with valid endpoint/model settings.
 
 ```bash
-cd /home/ubuntu/projects/stageweaver
-source .venv-cu128/bin/activate
+cd /data/xiezhen/stageweaver
+source .venv-cu126/bin/activate
 python client/stageweaver_runner.py \
   --memory_mode memento_text \
   --data_jsonl data/deepresearcher_protocol/seen_dev.jsonl \

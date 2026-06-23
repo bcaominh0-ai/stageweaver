@@ -1,8 +1,8 @@
---extra-index-url https://download.pytorch.org/whl/cu128
+--extra-index-url https://download.pytorch.org/whl/cu126
 
-torch==2.7.0+cu128
-torchvision==0.22.0+cu128
-torchaudio==2.7.0+cu128
+torch==2.7.0+cu126
+torchvision==0.22.0+cu126
+torchaudio==2.7.0+cu126
 transformers>=4.46.0
 accelerate>=1.13.0
 sentence-transformers>=3.0.0
@@ -45,3 +45,10 @@ assemblyai==0.40.2
 
 crawl4ai>=0.7.4
 opencv-python-headless==4.11.0.86
+
+# Dependencies declared by pyproject.toml but omitted from the upstream
+# requirements-linux-cu128.txt.
+anthropic>=0.71.0
+ffmpeg-python>=0.2.0
+scenedetect==0.6.6
+yt-dlp>=2025.8.27

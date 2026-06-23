@@ -1,0 +1,12 @@
+name: stageweaver-linux-a800-cu126
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - git
+  - sqlite
+  - ffmpeg
+  - poppler
+  - pip:
+      - -r requirements-linux-a800-cu126.txt

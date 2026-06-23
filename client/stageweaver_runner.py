@@ -375,6 +375,9 @@ def _apply_trace_bank_teacher_defaults(args: argparse.Namespace, argv: list[str]
         value = os.getenv(env_name, "").strip()
         if value and not _cli_option_present(argv, option):
             setattr(args, attr, value)
+    teacher_bypass = os.getenv("TEACHER_BYPASS_PROXY", "").strip().lower()
+    if teacher_bypass in {"1", "true", "yes", "on"} and not _cli_option_present(argv, "--openai_bypass_proxy"):
+        args.openai_bypass_proxy = True
 
 
 async def llm_judge(
@@ -435,9 +438,14 @@ class StageWeaverComposerRuntime:
         )
         self.composer.load_state_dict(composer_state_dict, strict=False)
         self.composer.eval()
+        projector_type = str(
+            projector_config.get("projector_type")
+            or ("mlp" if "hidden_multiplier" in projector_config else "linear")
+        )
         self.projector = StageWeaverProjector(
             composer_hidden_size=int(projector_config["composer_hidden_size"]),
             agent_hidden_size=int(projector_config["agent_hidden_size"]),
+            projector_type=projector_type,
             hidden_multiplier=int(projector_config.get("hidden_multiplier", 2)),
         ).to(self.device, dtype=next(self.composer.parameters()).dtype)
         self.projector.load_state_dict(projector_state_dict)
@@ -532,6 +540,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
 
     os.environ["OPENAI_API_KEY"] = args.openai_api_key
     os.environ["OPENAI_BASE_URL"] = args.openai_base_url
+    os.environ["OPENAI_BYPASS_PROXY"] = "1" if args.openai_bypass_proxy else "0"
     os.environ["DIRECT_API_KEY"] = args.openai_api_key
     os.environ["DIRECT_BASE_URL"] = args.openai_base_url
 
@@ -962,7 +971,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
                     print(
                         json.dumps(
                             {
-                                "fatal_error": "query_timeout",
+                                "query_error": "query_timeout",
                                 "index": idx,
                                 "error": _format_exception(exc),
                             },
@@ -970,7 +979,6 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
                         ),
                         file=sys.stderr,
                     )
-                    raise
                 if _is_quota_exception(exc):
                     print(
                         json.dumps(
@@ -1154,6 +1162,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--openai_base_url", type=str, default=os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:8000/v1"))
     parser.add_argument("--openai_api_key", type=str, default=os.getenv("OPENAI_API_KEY", "EMPTY"))
+    parser.add_argument(
+        "--openai_bypass_proxy",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("OPENAI_BYPASS_PROXY", "").strip().lower() in {"1", "true", "yes", "on"},
+        help="Connect the planner/executor OpenAI-compatible endpoint without environment proxies.",
+    )
     parser.add_argument("--judge_mode", choices=["llm", "exact_match"], default="llm")
     parser.add_argument("--judge_model", type=str, default=os.getenv("JUDGE_MODEL", os.getenv("EXEC_MODEL", "qwen3-4b")))
     parser.add_argument("--judge_base_url", type=str, default=os.getenv("JUDGE_BASE_URL", os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")))

@@ -59,6 +59,9 @@ class StageTuple:
             compact_metadata: dict[str, Any] = {}
             if memory_type:
                 compact_metadata["memory_type"] = memory_type
+            trace_id = str(metadata.get("trace_id") or "").strip()
+            if trace_id:
+                compact_metadata["trace_id"] = trace_id
             executor_memory_text = str(metadata.get("executor_memory_text") or "").strip()
             if executor_memory_text:
                 compact_metadata["executor_memory_text"] = executor_memory_text

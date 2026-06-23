@@ -81,6 +81,9 @@ The active StageWeaver method is LatentMem-style role-conditioned composition:
 - Success cases come from successful traces. Failure insights are distilled from failed traces when `build_stageweaver_bank` is run with `--distill_failure_insights`; the LLM must assign each insight to the original failure stage (`PLAN_INIT`, `PLAN_REVISE`, or `EXEC_STEP`) and role (`planner` or `executor`).
 - Input: `role + stage + current_state + retrieved role memory`
 - Current state for retrieval is short and stage-stable: planner uses the original question for both `PLAN_INIT` and `PLAN_REVISE`; executor uses the current task description for `EXEC_STEP`.
+- Memory Weaver: Qwen3-4B with trainable `q_proj`/`v_proj` LoRA and 8 trainable query latents.
+- Projection: one trainable linear layer maps Composer hidden states into the Agent hidden space.
+- Agent: a separate frozen Qwen3-4B; CE SFT updates only Composer LoRA, query latents, and the projector.
 - Interface: latent block appended after planner/executor prompt embeddings
 - Required `--stage_mode both`
 - Required `--latent_interface append`

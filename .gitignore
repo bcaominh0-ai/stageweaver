@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .venv-cu128/
+.venv-cu126/
 venv/
 env/
 .env
@@ -27,6 +28,9 @@ wandb/
 .cache/
 /tmp/
 .git-local/
+.stageweaver.git/
+.home/
+.references/
 *.pt
 *.pth
 *.ckpt

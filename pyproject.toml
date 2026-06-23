@@ -34,9 +34,9 @@ dependencies = [
     "xmltodict==0.14.2",
     "xls2xlsx>=0.2.0",
     "yt-dlp>=2025.8.27",
-    "torch==2.7.0+cu128",
-    "torchvision==0.22.0+cu128",
-    "torchaudio==2.7.0+cu128",
+    "torch==2.7.0+cu126",
+    "torchvision==0.22.0+cu126",
+    "torchaudio==2.7.0+cu126",
 ]
 
 [project.scripts]
@@ -52,13 +52,13 @@ exclude = ["analysis*", "data*", "docs*", "scripts*", "tests*"]
 namespaces = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
-torchaudio = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+torchaudio = { index = "pytorch-cu126" }
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
 explicit = true
 
 [[tool.uv.index]]

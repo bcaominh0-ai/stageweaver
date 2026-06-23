@@ -31,7 +31,7 @@ Defaults:
 - agent backend: openai-compatible endpoints
 - semantic retriever device: cpu
 - default endpoint: http://127.0.0.1:8000/v1
-- default SearXNG endpoint: http://127.0.0.1:8080
+- default SearXNG endpoint: http://127.0.0.1:18080
 - default Memento-Text memory source: result/stageweaver/current/stage_bank/stage_bank_train.jsonl
 
 Semantic workflow stages:

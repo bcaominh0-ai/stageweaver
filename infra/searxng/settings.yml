@@ -2,7 +2,7 @@ use_default_settings: true
 
 server:
   bind_address: "127.0.0.1"
-  port: 8080
+  port: 18080
   secret_key: "stageweaver-local-development-only"
   limiter: false
   image_proxy: false
@@ -13,8 +13,7 @@ search:
     - json
 
 outgoing:
-  request_timeout: 10.0
-  extra_proxy_timeout: 10
+  request_timeout: 15.0
   proxies:
     all://:
-      - http://127.0.0.1:7891
+      - http://127.0.0.1:17890

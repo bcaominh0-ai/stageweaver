@@ -3,9 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-${REPO_ROOT}/.venv-cu128/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-${REPO_ROOT}/.venv-cu126/bin/python}"
 export REPO_ROOT
-export SEARXNG_HOST="${SEARXNG_HOST:-http://127.0.0.1:8080}"
+export SEARXNG_HOST="${SEARXNG_HOST:-http://127.0.0.1:18080}"
 
 fail() {
   echo "[linux_preflight] $1" >&2
@@ -65,9 +65,16 @@ import json
 from pathlib import Path
 
 payload = json.loads(Path("/tmp/stageweaver_searxng_preflight.json").read_text(encoding="utf-8"))
-if not isinstance(payload.get("results", []), list):
+results = payload.get("results", [])
+if not isinstance(results, list):
     raise SystemExit("SearXNG JSON response does not contain a results list")
-print({"query": payload.get("query"), "results": len(payload.get("results", []))})
+if not results:
+    unavailable = payload.get("unresponsive_engines", [])
+    raise SystemExit(
+        "SearXNG is reachable but returned no results; "
+        f"check the outbound proxy/search engines: {unavailable[:8]}"
+    )
+print({"query": payload.get("query"), "results": len(results)})
 PY
 
 echo "[linux_preflight] No active archive imports"

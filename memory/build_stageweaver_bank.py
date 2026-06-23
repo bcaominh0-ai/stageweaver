@@ -5,6 +5,7 @@ import json
 import os
 import random
 import re
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Callable
 
@@ -486,22 +487,62 @@ def _result_info_lookup(results_rows: list[dict]) -> dict[str, dict[str, str | i
     return info_by_question
 
 
+def _trace_sample_index(trace: dict) -> int | None:
+    match = re.match(r"^[^-]+-(\d+)-", str(trace.get("task_id", "")))
+    return int(match.group(1)) if match else None
+
+
+def _matched_result_info(trace_rows: list[dict], result_rows: list[dict]) -> list[dict[str, Any]]:
+    """Match retries without collapsing duplicate questions or reordered rows."""
+    buckets: dict[tuple[int, str], deque[dict]] = defaultdict(deque)
+    by_question: dict[str, list[dict]] = defaultdict(list)
+    for row in result_rows:
+        question = str(row.get("question", "")).strip()
+        if not question:
+            continue
+        sample_index = row.get("source_sample_index")
+        if sample_index is None:
+            sample_index = row.get("index")
+        if sample_index is not None:
+            buckets[(int(sample_index), question)].append(row)
+        by_question[question].append(row)
+
+    matched: list[dict[str, Any]] = []
+    for trace in trace_rows:
+        question = str(trace.get("question", "")).strip()
+        sample_index = _trace_sample_index(trace)
+        row = None
+        if sample_index is not None:
+            queue = buckets.get((sample_index, question))
+            if queue:
+                row = queue.popleft()
+        if row is None and len(by_question.get(question, [])) == 1:
+            row = by_question[question][0]
+        matched.append(
+            {
+                "reward": int(bool(row["correct"])) if row is not None and "correct" in row else None,
+                "data_source": str((row or {}).get("data_source", "")).strip(),
+                "protocol_split": str((row or {}).get("protocol_split", "")).strip(),
+            }
+        )
+    return matched
+
+
 def build_tuples_from_traces(
     trace_rows: list[dict],
     result_rows: list[dict] | None = None,
     *,
     split_name: str = "unassigned",
 ) -> list[StageTuple]:
-    reward_by_question = _reward_lookup(result_rows or [])
-    info_by_question = _result_info_lookup(result_rows or [])
+    matched_info = _matched_result_info(trace_rows, result_rows or [])
     tuples_: list[StageTuple] = []
     for trace_idx, trace in enumerate(trace_rows):
         question = str(trace.get("question", "")).strip()
         if not question:
             continue
         task_id = str(trace.get("task_id", f"trace-{trace_idx:05d}"))
-        info = info_by_question.get(question, {})
-        raw_reward = reward_by_question.get(question)
+        info = matched_info[trace_idx]
+        raw_reward = info.get("reward")
         if raw_reward is None:
             reward = 0
             success_signal = "unknown"
@@ -516,7 +557,7 @@ def build_tuples_from_traces(
             stage = _planner_stage(cycle_idx)
             if planner_output and not _is_planner_final_output(planner_output):
                 planner_source_id = f"{task_id}-planner-{cycle_idx}"
-                planner_metadata = {"source_type": "trace", "trace_index": trace_idx}
+                planner_metadata = {"source_type": "trace", "trace_index": trace_idx, "trace_id": task_id}
                 if reward == 1:
                     planner_metadata.update(
                         {
@@ -557,6 +598,7 @@ def build_tuples_from_traces(
                 executor_metadata = {
                     "source_type": "trace",
                     "trace_index": trace_idx,
+                    "trace_id": task_id,
                     "task_description": current_state_text,
                     "raw_task_description": current_state_text,
                     "planner_output": planner_output,
@@ -693,6 +735,17 @@ def main() -> None:
     parser.add_argument("--small_train_size", type=int, default=200)
     parser.add_argument("--small_val_size", type=int, default=32)
     parser.add_argument(
+        "--val_frac_from_train",
+        type=float,
+        default=0.0,
+        help="Move this fraction of train episodes into validation after tuple construction.",
+    )
+    parser.add_argument(
+        "--success_only",
+        action="store_true",
+        help="Keep only StageTuples derived from successful traces (reward == 1).",
+    )
+    parser.add_argument(
         "--distill_failure_insights",
         action="store_true",
         help="Use an LLM to distill failed traces into stage-attributed insight role-memory rows.",
@@ -771,6 +824,25 @@ def main() -> None:
         train = [item for item in train if is_role_memory_item(item)]
         val = [item for item in val if is_role_memory_item(item)]
         test = [item for item in test if is_role_memory_item(item)]
+        if args.success_only:
+            train = [item for item in train if item.reward == 1]
+            val = [item for item in val if item.reward == 1]
+            test = [item for item in test if item.reward == 1]
+        if args.val_frac_from_train:
+            if not 0.0 < args.val_frac_from_train < 1.0:
+                raise SystemExit("--val_frac_from_train must be between 0 and 1")
+            if val:
+                raise SystemExit("--val_frac_from_train requires an empty explicit validation split")
+            episode_ids = sorted({item.episode_id for item in train})
+            random.Random(args.seed).shuffle(episode_ids)
+            val_count = max(1, int(len(episode_ids) * args.val_frac_from_train))
+            val_ids = set(episode_ids[:val_count])
+            val = [item for item in train if item.episode_id in val_ids]
+            train = [item for item in train if item.episode_id not in val_ids]
+            for item in train:
+                item.split = "train"
+            for item in val:
+                item.split = "val"
         tuples_ = train + val + test
     elif args.trace_jsonl:
         trace_path = Path(args.trace_jsonl)
@@ -789,6 +861,8 @@ def main() -> None:
                     insights_per_trace=args.insights_per_trace,
                 )
             )
+        if args.success_only:
+            tuples_ = [item for item in tuples_ if item.reward == 1]
         train, val, test = assign_splits(tuples_, seed=args.seed, train_frac=args.train_frac, val_frac=args.val_frac)
         train = [item for item in train if is_role_memory_item(item)]
         val = [item for item in val if is_role_memory_item(item)]

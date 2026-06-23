@@ -12,18 +12,25 @@ class StageWeaverProjector(nn.Module):
         self,
         composer_hidden_size: int,
         agent_hidden_size: int,
+        projector_type: str = "linear",
         hidden_multiplier: int = 2,
     ) -> None:
         super().__init__()
         inner = max(composer_hidden_size, agent_hidden_size) * hidden_multiplier
         self.composer_hidden_size = int(composer_hidden_size)
         self.agent_hidden_size = int(agent_hidden_size)
+        self.projector_type = str(projector_type)
         self.hidden_multiplier = int(hidden_multiplier)
-        self.net = nn.Sequential(
-            nn.Linear(self.composer_hidden_size, inner),
-            nn.GELU(),
-            nn.Linear(inner, self.agent_hidden_size),
-        )
+        if self.projector_type == "linear":
+            self.net = nn.Linear(self.composer_hidden_size, self.agent_hidden_size)
+        elif self.projector_type == "mlp":
+            self.net = nn.Sequential(
+                nn.Linear(self.composer_hidden_size, inner),
+                nn.GELU(),
+                nn.Linear(inner, self.agent_hidden_size),
+            )
+        else:
+            raise ValueError(f"unsupported projector_type: {self.projector_type}")
 
     def forward(self, latent_block: torch.Tensor) -> torch.Tensor:
         if latent_block.dim() != 3:
@@ -41,6 +48,7 @@ class StageWeaverProjector(nn.Module):
                 "config": {
                     "composer_hidden_size": self.composer_hidden_size,
                     "agent_hidden_size": self.agent_hidden_size,
+                    "projector_type": self.projector_type,
                     "hidden_multiplier": self.hidden_multiplier,
                 },
                 "state_dict": {name: tensor.detach().cpu() for name, tensor in self.state_dict().items()},
@@ -55,9 +63,11 @@ class StageWeaverProjector(nn.Module):
         state_dict = payload.get("state_dict", payload.get("projector_state_dict"))
         if not config or state_dict is None:
             raise KeyError("projector checkpoint must contain config/state_dict or projector_config/projector_state_dict")
+        projector_type = str(config.get("projector_type") or ("mlp" if "hidden_multiplier" in config else "linear"))
         model = cls(
             composer_hidden_size=int(config["composer_hidden_size"]),
             agent_hidden_size=int(config["agent_hidden_size"]),
+            projector_type=projector_type,
             hidden_multiplier=int(config.get("hidden_multiplier", 2)),
         ).to(device)
         model.load_state_dict(state_dict)

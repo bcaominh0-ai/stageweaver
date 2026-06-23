@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Awaitable, Callable
 
 import torch
+import httpx
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -100,14 +101,28 @@ class OpenAIBackend(ChatBackend):
             model: The OpenAI model to use (e.g., 'gpt-4', 'o3')
         """
         self.model = model
+        bypass_proxy = os.getenv("OPENAI_BYPASS_PROXY", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        request_timeout = float(os.getenv("OPENAI_REQUEST_TIMEOUT_SEC", "120"))
+        http_client = (
+            httpx.AsyncClient(trust_env=False, timeout=request_timeout)
+            if bypass_proxy
+            else None
+        )
+        client_kwargs: Dict[str, Any] = {}
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
         # Initialize OpenAI client with API key and base URL from environment
         self.client = AsyncOpenAI(
             api_key=os.getenv("OPENAI_API_KEY"),
             base_url=os.getenv("OPENAI_BASE_URL"),
+            **client_kwargs,
         ) if not is_azure else AsyncAzureOpenAI(
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+            **client_kwargs,
         )
 
     @retry(
@@ -714,7 +729,7 @@ class HierarchicalClient:
     # Maximum number of planning cycles before giving up
     MAX_CYCLES = int(os.getenv("STAGEWEAVER_MAX_CYCLES", "3"))
     MAX_EXECUTOR_STEPS_PER_TASK = int(os.getenv("STAGEWEAVER_MAX_EXECUTOR_STEPS_PER_TASK", "48"))
-    TOOL_CALL_TIMEOUT_SEC = float(os.getenv("STAGEWEAVER_TOOL_CALL_TIMEOUT_SEC", "45"))
+    TOOL_CALL_TIMEOUT_SEC = float(os.getenv("STAGEWEAVER_TOOL_CALL_TIMEOUT_SEC", "75"))
     TRACE_RESULT_CHARS = 4000
 
     def __init__(

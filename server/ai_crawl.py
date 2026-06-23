@@ -11,9 +11,13 @@ import colorlog
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
 from openai import AsyncOpenAI
-from crawl4ai import AsyncWebCrawler
+from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
 from mcp.server.fastmcp import FastMCP
 load_dotenv()
+
+# Chromium must use the system libffi; the parent Conda path exposes an
+# incompatible copy that breaks libp11-kit when Crawl4AI launches the browser.
+os.environ.pop("LD_LIBRARY_PATH", None)
 
 # --------------------------------------------------------------------------- #
 #  Logging
@@ -45,7 +49,7 @@ EXPLICIT_CRAWL_EXTRACT_OVERRIDE = any(
 # Customizable Parameters
 RATE_LIMIT = 10
 RATE_INTERVAL = 60
-MAX_EXTRACT_INPUT_CHARS = int(os.getenv("CRAWL_EXTRACT_MAX_INPUT_CHARS", "60000"))
+MAX_EXTRACT_INPUT_CHARS = int(os.getenv("CRAWL_EXTRACT_MAX_INPUT_CHARS", "12000"))
 CHUNK_WORDS = int(os.getenv("CRAWL_EXTRACT_CHUNK_WORDS", "900"))
 CHUNK_OVERLAP_WORDS = int(os.getenv("CRAWL_EXTRACT_CHUNK_OVERLAP_WORDS", "90"))
 TOP_CHUNKS = int(os.getenv("CRAWL_EXTRACT_TOP_CHUNKS", "10"))
@@ -55,6 +59,8 @@ RERANK_MODEL = _env_nonempty("CRAWL_RERANK_MODEL") or "Qwen/Qwen3-Reranker-8B"
 RERANK_CANDIDATES = int(os.getenv("CRAWL_RERANK_CANDIDATES", "32"))
 RERANK_DOC_CHARS = int(os.getenv("CRAWL_RERANK_DOC_CHARS", "2500"))
 RERANK_TIMEOUT = float(os.getenv("CRAWL_RERANK_TIMEOUT", "30"))
+CRAWL_PAGE_TIMEOUT_SEC = float(os.getenv("CRAWL_PAGE_TIMEOUT_SEC", "30"))
+CRAWL_ATTEMPTS = max(1, int(os.getenv("CRAWL_ATTEMPTS", "2")))
 
 EXTRACTOR_SYSTEM_PROMPT = (
     "You are a careful, concise information extraction assistant. "
@@ -109,7 +115,17 @@ class OpenAIBackend:
                 )
             base_url = _env_nonempty("JUDGE_BASE_URL", "OPENAI_BASE_URL") or "https://api.openai.com/v1"
         self.model = DEFAULT_MODEL
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        bypass_proxy = os.getenv("CRAWL_EXTRACT_BYPASS_PROXY", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        request_timeout = float(os.getenv("CRAWL_EXTRACT_REQUEST_TIMEOUT_SEC", "60"))
+        client_kwargs: Dict[str, Any] = {}
+        if bypass_proxy:
+            client_kwargs["http_client"] = httpx.AsyncClient(
+                trust_env=False,
+                timeout=request_timeout,
+            )
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, **client_kwargs)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -120,7 +136,7 @@ class OpenAIBackend:
     async def chat(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: int = 30000,
+        max_tokens: int = 800,
         temperature: float = 0.2,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -560,7 +576,7 @@ async def _extract_for_query(
     md: str,
     query: str,
     *,
-    max_tokens: int = 30000,
+    max_tokens: int = 800,
     temperature: float = 0.1,
 ) -> str:
     selected_md = await _select_relevant_markdown_with_rerank(md, query)
@@ -574,20 +590,36 @@ async def _extract_for_query(
 async def _crawl_markdown(url: str) -> str:
     # MCP stdio uses stdout for JSON-RPC; Crawl4AI progress output must not
     # leak there or the client will fail to parse protocol messages.
-    with contextlib.redirect_stdout(sys.stderr):
-        async with AsyncWebCrawler() as crawler:
-            result = await crawler.arun(url=url)
-        md = (result.markdown or "").strip()
-        if not md:
-            raise RuntimeError(f"No markdown extracted from {url}")
-            return result
-        return md
+    errors: list[str] = []
+    run_config = CrawlerRunConfig(
+        page_timeout=max(1000, int(CRAWL_PAGE_TIMEOUT_SEC * 1000)),
+        max_retries=1,
+        verbose=False,
+    )
+    for attempt in range(1, CRAWL_ATTEMPTS + 1):
+        try:
+            with contextlib.redirect_stdout(sys.stderr):
+                async with AsyncWebCrawler() as crawler:
+                    result = await asyncio.wait_for(
+                        crawler.arun(url=url, config=run_config),
+                        timeout=CRAWL_PAGE_TIMEOUT_SEC + 5,
+                    )
+            md = (result.markdown or "").strip()
+            if md:
+                return md
+            detail = getattr(result, "error_message", "") or "no markdown returned"
+            raise RuntimeError(detail)
+        except Exception as exc:
+            errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
+            if attempt < CRAWL_ATTEMPTS:
+                await asyncio.sleep(min(2 ** (attempt - 1), 4))
+    raise RuntimeError(f"Failed to crawl {url} after {CRAWL_ATTEMPTS} attempts: {' | '.join(errors)}")
 
 async def _crawl_and_extract(
     url: str,
     query: str,
     *,
-    max_tokens: int = 30000,
+    max_tokens: int = 800,
     temperature: float = 0.1,
 ) -> str:
     logger.info(f"Crawling: {url}")
@@ -612,7 +644,7 @@ async def crawl_extract(
     url: str,
     query: str,
     temperature: float = 0.1,
-    max_tokens: int = 30000,
+    max_tokens: int = 800,
 ) -> str:
     """
     Crawl a URL to Markdown and extract only the content relevant to the query.
@@ -625,7 +657,7 @@ async def crawl_extract(
         The information need; used to extract only the most relevant snippets from the page Markdown.
     temperature : float, optional (default: 0.1)
         Sampling temperature for the extraction model.
-    max_tokens : int, optional (default: 1400)
+    max_tokens : int, optional (default: 800)
         Maximum tokens allowed in the extraction model response.
 
     Returns

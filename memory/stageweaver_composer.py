@@ -19,9 +19,10 @@ except Exception:  # pragma: no cover
 class StageWeaverComposerConfig:
     model_name_or_path: str
     latents_len: int = 8
-    lora_r: int = 0
-    lora_alpha: int = 16
-    lora_dropout: float = 0.0
+    lora_r: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.1
+    lora_target_modules: tuple[str, ...] = ("q_proj", "v_proj")
     train_base_model: bool = False
     trust_remote_code: bool = True
 
@@ -43,6 +44,7 @@ class StageWeaverComposer(nn.Module):
             config.model_name_or_path,
             trust_remote_code=config.trust_remote_code,
         )
+        self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -71,9 +73,13 @@ class StageWeaverComposer(nn.Module):
                 r=int(config.lora_r),
                 lora_alpha=int(config.lora_alpha),
                 lora_dropout=float(config.lora_dropout),
+                target_modules=list(config.lora_target_modules),
                 bias="none",
             )
             self.model = get_peft_model(self.model, lora_cfg)
+            if config.train_base_model:
+                for param in self.model.parameters():
+                    param.requires_grad_(True)
 
         if not config.train_base_model and config.lora_r <= 0:
             for param in self.model.parameters():
@@ -140,6 +146,7 @@ class StageWeaverComposer(nn.Module):
                 "lora_r": self.config.lora_r,
                 "lora_alpha": self.config.lora_alpha,
                 "lora_dropout": self.config.lora_dropout,
+                "lora_target_modules": list(self.config.lora_target_modules),
                 "train_base_model": self.config.train_base_model,
                 "trust_remote_code": self.config.trust_remote_code,
             },

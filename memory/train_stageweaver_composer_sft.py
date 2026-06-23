@@ -119,7 +119,10 @@ def retrieve_role_memory_neighbors(
     for hit in hits:
         cand = StageTuple.from_dict(dict(hit["item"]))
         cand_role = tuple_role(cand)
-        if cand.source_id == item.source_id or cand_role != item_role:
+        item_trace_id = str((item.metadata or {}).get("trace_id") or "").strip()
+        cand_trace_id = str((cand.metadata or {}).get("trace_id") or "").strip()
+        same_trace = bool(item_trace_id and cand_trace_id and item_trace_id == cand_trace_id)
+        if same_trace or cand.source_id == item.source_id or cand_role != item_role:
             continue
         if cand.stage != item.stage:
             continue
@@ -355,6 +358,19 @@ def _planner_output_is_valid(text: str) -> bool:
     return False
 
 
+def _planner_generation_indices(stages: list[str], remaining: int) -> list[int]:
+    if remaining <= 0:
+        return []
+    indices: list[int] = []
+    for idx, stage in enumerate(stages):
+        if stage == EXEC_STEP:
+            continue
+        indices.append(idx)
+        if len(indices) >= remaining:
+            break
+    return indices
+
+
 @torch.no_grad()
 def evaluate(
     composer: StageWeaverComposer,
@@ -398,9 +414,8 @@ def evaluate(
         total_loss += float(outputs.loss.item()) * len(batch["stage"])
         total_items += len(batch["stage"])
 
-        for idx, stage in enumerate(batch["stage"][:eval_generation_samples]):
-            if stage == EXEC_STEP:
-                continue
+        remaining_generations = max(eval_generation_samples - planner_total, 0)
+        for idx in _planner_generation_indices(batch["stage"], remaining_generations):
             planner_total += 1
             prompt_len = int(batch["prompt_attention_mask"][idx].sum().item())
             prompt_embeds = agent_model.get_input_embeddings()(batch["prompt_input_ids"][idx : idx + 1, :prompt_len].to(device))
@@ -459,6 +474,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     projector = StageWeaverProjector(
         composer_hidden_size=composer.hidden_size,
         agent_hidden_size=agent_hidden_size,
+        projector_type=args.projector_type,
         hidden_multiplier=args.projector_hidden_multiplier,
     ).to(device=device, dtype=next(composer.parameters()).dtype)
 
@@ -550,6 +566,18 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             train_loss_sum += float(loss.item()) * len(batch["stage"])
             train_items += len(batch["stage"])
             step += 1
+            if args.log_every_steps > 0 and step % args.log_every_steps == 0:
+                print(
+                    json.dumps(
+                        {
+                            "epoch": epoch,
+                            "step": step,
+                            "train_avg_loss": train_loss_sum / max(train_items, 1),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
             if args.max_steps > 0 and step >= args.max_steps:
                 break
 
@@ -579,6 +607,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
                 "projector_config": {
                     "composer_hidden_size": composer.hidden_size,
                     "agent_hidden_size": agent_hidden_size,
+                    "projector_type": args.projector_type,
                     "hidden_multiplier": args.projector_hidden_multiplier,
                 },
                 "agent_model_path": agent_model_path,
@@ -602,6 +631,14 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         "composer_model": composer_model_path,
         "agent_model_path": agent_model_path,
         "latents_len": args.latents_len,
+        "composer_lora": {
+            "r": args.composer_lora_r,
+            "alpha": args.composer_lora_alpha,
+            "dropout": args.composer_lora_dropout,
+            "target_modules": list(composer_cfg.lora_target_modules),
+        },
+        "projector_type": args.projector_type,
+        "agent_frozen": all(not param.requires_grad for param in agent_model.parameters()),
         "epochs": len(history),
         "batch_size": args.batch_size,
         "eval_batch_size": args.eval_batch_size,
@@ -632,11 +669,12 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--agent_model", type=str, default="qwen3-4b")
     parser.add_argument("--agent_model_path", type=str, default="")
     parser.add_argument("--latents_len", type=int, default=8)
-    parser.add_argument("--composer_lora_r", type=int, default=0)
-    parser.add_argument("--composer_lora_alpha", type=int, default=16)
-    parser.add_argument("--composer_lora_dropout", type=float, default=0.0)
+    parser.add_argument("--composer_lora_r", type=int, default=16)
+    parser.add_argument("--composer_lora_alpha", type=int, default=32)
+    parser.add_argument("--composer_lora_dropout", type=float, default=0.1)
     parser.add_argument("--train_composer_base", action="store_true")
     parser.add_argument("--projector_hidden_multiplier", type=int, default=2)
+    parser.add_argument("--projector_type", choices=["linear", "mlp"], default="linear")
     parser.add_argument("--matched_k", type=int, default=3)
     parser.add_argument("--memory_budget_tokens", type=int, default=192)
     parser.add_argument("--bounded_budget_tokens", type=int, default=96)
@@ -653,13 +691,14 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--max_train_examples", type=int, default=0)
     parser.add_argument("--max_val_examples", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--eval_batch_size", type=int, default=1)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--max_steps", type=int, default=0)
+    parser.add_argument("--log_every_steps", type=int, default=50)
     parser.add_argument("--cpu", action="store_true")
     return parser
 
