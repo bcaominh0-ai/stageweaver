@@ -5,6 +5,7 @@ import math
 import re
 import sys
 from typing import Dict, Any, List, Iterable
+from urllib.parse import urlparse, unquote
 from dotenv import load_dotenv
 
 import colorlog
@@ -61,6 +62,20 @@ RERANK_DOC_CHARS = int(os.getenv("CRAWL_RERANK_DOC_CHARS", "2500"))
 RERANK_TIMEOUT = float(os.getenv("CRAWL_RERANK_TIMEOUT", "30"))
 CRAWL_PAGE_TIMEOUT_SEC = float(os.getenv("CRAWL_PAGE_TIMEOUT_SEC", "30"))
 CRAWL_ATTEMPTS = max(1, int(os.getenv("CRAWL_ATTEMPTS", "2")))
+CRAWL_SEARCH_ONLY = os.getenv("CRAWL_SEARCH_ONLY", "1").strip().lower() not in {
+    "0", "false", "no", "off",
+}
+CRAWL_SEARCH_FALLBACK = os.getenv("CRAWL_SEARCH_FALLBACK", "1").strip().lower() not in {
+    "0", "false", "no", "off",
+}
+CRAWL_SEARCH_RESULTS = max(1, int(os.getenv("CRAWL_SEARCH_RESULTS", "8")))
+CRAWL_SEARCH_LANGUAGE = os.getenv("CRAWL_SEARCH_LANGUAGE", "en").strip() or "en"
+REMOTE_CRAWL_EXTRACT_URL = _env_nonempty("REMOTE_CRAWL_EXTRACT_URL").rstrip("/")
+REMOTE_CRAWL_EXTRACT_API_KEY = _env_nonempty("REMOTE_CRAWL_EXTRACT_API_KEY", "SEARXNG_API_KEY", "SEARCH_API_KEY")
+REMOTE_CRAWL_EXTRACT_TIMEOUT_SEC = float(os.getenv("REMOTE_CRAWL_EXTRACT_TIMEOUT_SEC", "60"))
+REMOTE_CRAWL_EXTRACT_BYPASS_PROXY = os.getenv("REMOTE_CRAWL_EXTRACT_BYPASS_PROXY", "1").strip().lower() not in {
+    "0", "false", "no", "off",
+}
 
 EXTRACTOR_SYSTEM_PROMPT = (
     "You are a careful, concise information extraction assistant. "
@@ -615,6 +630,145 @@ async def _crawl_markdown(url: str) -> str:
                 await asyncio.sleep(min(2 ** (attempt - 1), 4))
     raise RuntimeError(f"Failed to crawl {url} after {CRAWL_ATTEMPTS} attempts: {' | '.join(errors)}")
 
+def _search_query_for_url(url: str, query: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    title = unquote(parsed.path.rsplit("/", 1)[-1]).replace("_", " ").strip()
+    pieces = [query.strip()]
+    if title:
+        pieces.append(title)
+    if host:
+        pieces.append(f"site:{host}")
+    return " ".join(piece for piece in pieces if piece)
+
+
+def _search_results_to_markdown(url: str, search_query: str, results: list[Dict[str, str]]) -> str:
+    lines = [
+        f"# Search API content for {url}",
+        "",
+        "These results came from the configured search API.",
+        f"Search query: {search_query}",
+        "",
+    ]
+    for idx, item in enumerate(results, start=1):
+        title = (item.get("title") or "Untitled").strip()
+        link = (item.get("link") or "").strip()
+        snippet = (item.get("snippet") or "").strip()
+        if not any((title, link, snippet)):
+            continue
+        lines.extend([
+            f"## Result {idx}: {title}",
+            f"URL: {link}",
+            "",
+            snippet or "No snippet returned.",
+            "",
+        ])
+    return "\n".join(lines).strip()
+
+
+def _search_fallback_queries(url: str, query: str) -> list[str]:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    title = unquote(parsed.path.rsplit("/", 1)[-1]).replace("_", " ").strip()
+    candidates = [
+        _search_query_for_url(url, query),
+        " ".join(piece for piece in (title, "Wikipedia") if piece),
+        " ".join(piece for piece in (query.strip(), title) if piece),
+        " ".join(piece for piece in (title, host) if piece),
+        query.strip(),
+    ]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = " ".join(candidate.split())
+        if normalized and normalized.lower() not in seen:
+            seen.add(normalized.lower())
+            deduped.append(normalized)
+    return deduped
+
+
+def _rank_search_results(results: list[Dict[str, str]], preferred_host: str) -> list[Dict[str, str]]:
+    if not preferred_host:
+        return results
+    preferred = []
+    others = []
+    for item in results:
+        link = (item.get("link") or "").lower()
+        if preferred_host in link:
+            preferred.append(item)
+        else:
+            others.append(item)
+    return preferred + others
+
+
+async def _search_markdown_fallback(url: str, query: str) -> str:
+    from server.search_tool import search
+
+    preferred_host = urlparse(url).netloc.lower()
+    errors: list[str] = []
+    best_results: list[Dict[str, str]] = []
+    best_query = ""
+
+    for search_query in _search_fallback_queries(url, query):
+        logger.info(f"Using configured search API: {search_query}")
+        results = await search(
+            query=search_query,
+            num_results=CRAWL_SEARCH_RESULTS,
+            language=CRAWL_SEARCH_LANGUAGE,
+        )
+        if results and results[0].get("title") in {"Search error", "Search config error"}:
+            errors.append(f"{search_query}: {results[0].get('snippet') or results[0].get('title')}")
+            continue
+        ranked = _rank_search_results(results, preferred_host)
+        if ranked:
+            best_results = ranked
+            best_query = search_query
+            if preferred_host and preferred_host in (ranked[0].get("link") or "").lower():
+                break
+
+    if not best_results:
+        detail = " | ".join(errors) if errors else "no results"
+        raise RuntimeError(f"configured search API returned no usable crawl fallback content: {detail}")
+
+    md = _search_results_to_markdown(url, best_query, best_results)
+    if not md.strip():
+        raise RuntimeError("configured search API returned no usable crawl fallback content")
+    return md
+
+
+async def _remote_crawl_markdown(url: str, query: str) -> tuple[str, str]:
+    if not REMOTE_CRAWL_EXTRACT_URL:
+        raise RuntimeError("REMOTE_CRAWL_EXTRACT_URL is not configured")
+    if not REMOTE_CRAWL_EXTRACT_API_KEY:
+        raise RuntimeError("REMOTE_CRAWL_EXTRACT_API_KEY is not configured")
+
+    headers = {"x-api-key": REMOTE_CRAWL_EXTRACT_API_KEY}
+    payload = {
+        "url": url,
+        "query": query,
+        "max_chars": MAX_EXTRACT_INPUT_CHARS,
+    }
+    async with httpx.AsyncClient(
+        timeout=REMOTE_CRAWL_EXTRACT_TIMEOUT_SEC,
+        trust_env=not REMOTE_CRAWL_EXTRACT_BYPASS_PROXY,
+    ) as client:
+        response = await client.post(REMOTE_CRAWL_EXTRACT_URL, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    markdown = str(data.get("markdown") or data.get("extracted") or "").strip()
+    if not markdown:
+        raise RuntimeError("remote crawl API returned empty markdown")
+    source = str(data.get("source") or "remote")
+    title = str(data.get("title") or "").strip()
+    final_url = str(data.get("final_url") or url).strip()
+    if title:
+        header = f"# {title}\nSource: {final_url}\nRemote source: {source}\n\n"
+    else:
+        header = f"Source: {final_url}\nRemote source: {source}\n\n"
+    return header + markdown, source
+
+
 async def _crawl_and_extract(
     url: str,
     query: str,
@@ -622,14 +776,52 @@ async def _crawl_and_extract(
     max_tokens: int = 800,
     temperature: float = 0.1,
 ) -> str:
-    logger.info(f"Crawling: {url}")
-    md = await _crawl_markdown(url)
-    logger.info(f"Markdown length: {len(md):,} characters")
-    backend = OpenAIBackend()  
+    crawl_error = None
+    md_source = "page markdown"
+    if REMOTE_CRAWL_EXTRACT_URL:
+        logger.info(f"Using remote crawl API: {url}")
+        try:
+            md, remote_source = await _remote_crawl_markdown(url, query)
+            md_source = "remote page markdown" if remote_source == "direct" else "remote search fallback snippets"
+            logger.info(f"Remote crawl markdown length: {len(md):,} characters; source={remote_source}")
+        except Exception as exc:
+            crawl_error = exc
+            if not CRAWL_SEARCH_FALLBACK:
+                raise
+            logger.warning(f"Remote crawl failed; trying local search fallback: {exc}")
+            md = await _search_markdown_fallback(url, query)
+            md_source = "configured-search-API snippets"
+            logger.info(f"Search API markdown length: {len(md):,} characters")
+    elif CRAWL_SEARCH_ONLY:
+        logger.info(f"Using configured search API instead of direct crawling: {url}")
+        md = await _search_markdown_fallback(url, query)
+        md_source = "configured-search-API snippets"
+        logger.info(f"Search API markdown length: {len(md):,} characters")
+    else:
+        logger.info(f"Crawling: {url}")
+        try:
+            md = await _crawl_markdown(url)
+            logger.info(f"Markdown length: {len(md):,} characters")
+        except Exception as exc:
+            crawl_error = exc
+            if not CRAWL_SEARCH_FALLBACK:
+                raise
+            logger.warning(f"Direct crawl failed; trying search fallback: {exc}")
+            md = await _search_markdown_fallback(url, query)
+            md_source = "configured-search-API snippets"
+            logger.info(f"Search API markdown length: {len(md):,} characters")
+
+    backend = OpenAIBackend()
+    extraction_query = (
+        f"{query}\n\n"
+        f"Use only the {md_source} below. If evidence is limited, say so explicitly."
+    )
+    if crawl_error is not None:
+        extraction_query += " The original URL could not be directly crawled by the first-choice crawl path."
     return await _extract_for_query(
         backend,
         md,
-        query=query,
+        query=extraction_query,
         max_tokens=max_tokens,
         temperature=temperature,
     )

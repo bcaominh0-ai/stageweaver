@@ -1,0 +1,118 @@
+如果调用主机本身**没有配置任何 HTTP/HTTPS 代理**，就直接访问公网 IP，不需要写：
+
+```bash
+--noproxy '*'
+```
+
+推荐先只用 Bing，速度通常更稳定。
+
+```bash
+curl -sS -G \
+  --connect-timeout 5 \
+  --max-time 30 \
+  "http://119.45.1.210/search" \
+  --data-urlencode "q=Qwen3 agent memory" \
+  --data-urlencode "engines=bing" \
+  --data-urlencode "limit=5" \
+  --data-urlencode "api_key=你的真实API_KEY"
+```
+
+其中：
+
+* `q`：搜索内容；
+* `engines=bing`：只调用 Bing；
+* `limit=5`：返回 5 条结果；
+* `api_key`：你在服务器 `.env` 中配置的 Key；
+* `--connect-timeout 5`：5 秒内连不上服务器就停止；
+* `--max-time 30`：整个请求最多等待 30 秒。
+
+## 先验证网络连通性
+
+在主机执行：
+
+```bash
+curl -i \
+  --connect-timeout 5 \
+  --max-time 10 \
+  http://119.45.1.210/health
+```
+
+正常应返回：
+
+```text
+HTTP/1.1 200 OK
+```
+
+然后再执行搜索命令。
+
+## 测量调用耗时
+
+```bash
+curl -sS -o search_result.json \
+  -w '连接耗时: %{time_connect}s\n首包耗时: %{time_starttransfer}s\n总耗时: %{time_total}s\nHTTP状态: %{http_code}\n' \
+  -G "http://119.45.1.210/search" \
+  --connect-timeout 5 \
+  --max-time 30 \
+  --data-urlencode "q=Qwen3 agent memory" \
+  --data-urlencode "engines=bing" \
+  --data-urlencode "limit=5" \
+  --data-urlencode "api_key=你的真实API_KEY"
+```
+
+查看结果：
+
+```bash
+cat search_result.json
+```
+
+## 避免每次在命令中写 API Key
+
+Linux 主机上可以先设置环境变量：
+
+```bash
+export SEARCH_API_KEY='你的真实API_KEY'
+```
+
+然后调用：
+
+```bash
+curl -sS -G \
+  --connect-timeout 5 \
+  --max-time 30 \
+  "http://119.45.1.210/search" \
+  --data-urlencode "q=Qwen3 agent memory" \
+  --data-urlencode "engines=bing" \
+  --data-urlencode "limit=5" \
+  --data-urlencode "api_key=$SEARCH_API_KEY"
+```
+
+使用结束后清除：
+
+```bash
+unset SEARCH_API_KEY
+```
+
+## Python 调用
+
+```python
+import requests
+
+response = requests.get(
+    "http://119.45.1.210/search",
+    params={
+        "q": "Qwen3 agent memory",
+        "engines": "bing",
+        "limit": 5,
+        "api_key": "你的真实API_KEY",
+    },
+    timeout=(5, 30),
+)
+
+response.raise_for_status()
+data = response.json()
+
+for item in data.get("results", []):
+    print(item.get("title"))
+    print(item.get("url"))
+    print()
+```

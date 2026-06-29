@@ -69,6 +69,19 @@ ACTIVE_TOOL_SCRIPTS = [
     PROJECT_ROOT / "server" / "search_tool.py",
 ]
 
+_tool_script_filter = {
+    item.strip()
+    for item in os.getenv("STAGEWEAVER_TOOL_SCRIPT_FILTER", "").split(",")
+    if item.strip()
+}
+if _tool_script_filter:
+    ACTIVE_TOOL_SCRIPTS = [
+        path for path in ACTIVE_TOOL_SCRIPTS
+        if path.name in _tool_script_filter or str(path) in _tool_script_filter
+    ]
+    if not ACTIVE_TOOL_SCRIPTS:
+        raise RuntimeError("STAGEWEAVER_TOOL_SCRIPT_FILTER removed all tool scripts.")
+
 ACTIVE_MEMORY_MODES = {"memento_text", "stageweaver", "none"}
 
 JUDGE_PROMPT_TPL = """You will be given a question and its ground truth answer list where each item can be a ground truth answer. Provided a pred_answer, judge if the pred_answer correctly answers the question based on the ground truth answer list.
@@ -636,7 +649,7 @@ async def run_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
     executor_retrieved_sum = sum(int(record.get("executor_retrieved_cases", 0) or 0) for record in records)
     try:
         await client.connect_to_servers(server_scripts)
-        for idx, row in enumerate(data_rows):
+        for idx, row in enumerate(data_rows[int(args.start_index) :], start=int(args.start_index)):
             if idx in existing_by_index:
                 continue
             query = str(row.get("question", ""))
@@ -1195,6 +1208,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional trace path override; if provided without a value, auto-uses output_dir/trace_<mode>.jsonl.",
     )
     parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--start_index", type=int, default=0, help="Start processing at this zero-based dataset index while preserving original result indices.")
     parser.add_argument("--memory_top_k", type=int, default=8)
     parser.add_argument("--memory_budget_tokens", type=int, default=192)
     parser.add_argument("--bounded_memory_budget_tokens", type=int, default=96)
@@ -1234,6 +1248,8 @@ def parse_args() -> argparse.Namespace:
     if args.memory_mode:
         args.modes = [args.memory_mode]
     _apply_trace_bank_teacher_defaults(args, sys.argv)
+    if int(args.start_index) < 0:
+        raise SystemExit("--start_index must be >= 0.")
     if int(args.planner_max_new_tokens) <= 0:
         raise SystemExit("--planner_max_new_tokens must be > 0.")
     if int(args.executor_max_new_tokens) <= 0:

@@ -9,13 +9,7 @@ services:
       - INSTANCE_NAME=stageweaver-local
       - GRANIAN_HOST=127.0.0.1
       - GRANIAN_PORT=18080
-      - HTTP_PROXY=http://127.0.0.1:17890
-      - HTTPS_PROXY=http://127.0.0.1:17890
-      - ALL_PROXY=http://127.0.0.1:17890
       - NO_PROXY=127.0.0.1,localhost,::1
-      - http_proxy=http://127.0.0.1:17890
-      - https_proxy=http://127.0.0.1:17890
-      - all_proxy=http://127.0.0.1:17890
       - no_proxy=127.0.0.1,localhost,::1
     volumes:
       - ./settings.yml:/etc/searxng/settings.yml:ro

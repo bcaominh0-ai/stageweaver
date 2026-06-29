@@ -14,6 +14,7 @@ Dependencies
 # --------------------------------------------------------------------------- #
 
 import asyncio
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +23,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 load_dotenv()
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # --------------------------------------------------------------------------- #
 #  FastMCP server instance
@@ -39,6 +41,13 @@ SAFE_SEARCH_LEVELS = {0, 1, 2}
 VALID_TIME_RANGES = {"day", "week", "month", "year"}
 SEARCH_TIMEOUT = float(os.getenv("SEARXNG_SEARCH_TIMEOUT_SEC", "20"))
 SEARCH_ATTEMPTS = max(1, int(os.getenv("SEARXNG_SEARCH_ATTEMPTS", "3")))
+SEARCH_API_STYLE = os.getenv("SEARXNG_API_STYLE", "searxng").strip().lower()
+SEARXNG_API_KEY = (os.getenv("SEARXNG_API_KEY") or os.getenv("SEARCH_API_KEY") or "").strip()
+SEARXNG_API_KEY_PLACEMENT = os.getenv("SEARXNG_API_KEY_PLACEMENT", "header").strip().lower()
+SEARXNG_API_KEY_HEADER = os.getenv("SEARXNG_API_KEY_HEADER", "X-API-Key").strip() or "X-API-Key"
+SEARXNG_API_KEY_PARAM = os.getenv("SEARXNG_API_KEY_PARAM", "api_key").strip() or "api_key"
+SEARXNG_LANGUAGE_PARAM = os.getenv("SEARXNG_LANGUAGE_PARAM", "lang").strip() or "lang"
+SEARXNG_ENGINES = os.getenv("SEARXNG_ENGINES", "").strip()
 
 
 def _check_safe(level: int) -> None:
@@ -88,20 +97,45 @@ async def search(
     _check_safe(safe_search)
     _check_time_range(time_range)
 
-    params: Dict[str, Any] = {
-        "q": query,
-        "format": "json",
-        "language": language,
-        "categories": category or DEFAULT_CATEGORY,
-        "pageno": 1,
-        "safe": safe_search,
-    }
-    if time_range:
-        params["time_range"] = time_range
+    if SEARCH_API_STYLE in {"api", "cloud", "proxy"}:
+        if not SEARXNG_API_KEY:
+            return [{
+                "title": "Search config error",
+                "link": "",
+                "snippet": "Missing SEARXNG_API_KEY in .env for the public search API.",
+            }]
+        params: Dict[str, Any] = {
+            "q": query,
+            "engines": SEARXNG_ENGINES or category or "bing",
+            "limit": num_results,
+        }
+        # The public Search API uses lang for language selection; standard
+        # SearXNG uses language and is handled in the branch below.
+        if language:
+            params[SEARXNG_LANGUAGE_PARAM] = language
+        if SEARXNG_API_KEY and SEARXNG_API_KEY_PLACEMENT != "header":
+            params[SEARXNG_API_KEY_PARAM] = SEARXNG_API_KEY
+    else:
+        params = {
+            "q": query,
+            "format": "json",
+            "language": language,
+            "categories": category or DEFAULT_CATEGORY,
+            "pageno": 1,
+            "safe": safe_search,
+        }
+        if time_range:
+            params["time_range"] = time_range
+        if SEARXNG_API_KEY and SEARXNG_API_KEY_PLACEMENT == "query":
+            params[SEARXNG_API_KEY_PARAM] = SEARXNG_API_KEY
 
     url = f"{host.rstrip('/')}/search"
 
-    async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT, headers={"User-Agent": "fastmcp-search"}) as client:
+    headers = {"User-Agent": "fastmcp-search"}
+    if SEARXNG_API_KEY and SEARXNG_API_KEY_PLACEMENT == "header":
+        headers[SEARXNG_API_KEY_HEADER] = SEARXNG_API_KEY
+
+    async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT, headers=headers) as client:
         errors: list[str] = []
         for attempt in range(1, SEARCH_ATTEMPTS + 1):
             try:
@@ -132,8 +166,8 @@ async def search(
     return [
         {
             "title": it.get("title", ""),
-            "link": it.get("url", ""),
-            "snippet": it.get("content", ""),
+            "link": it.get("url", it.get("link", "")),
+            "snippet": it.get("content", it.get("snippet", "")),
         }
         for it in results
     ]

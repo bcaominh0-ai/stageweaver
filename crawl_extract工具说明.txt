@@ -1,0 +1,188 @@
+crawl_extract 工具说明
+======================
+
+1. 工具用途
+-----------
+
+`crawl_extract` 用于根据 URL 和 query 打开网页、抽取相关内容，并返回可供模型继续推理的证据文本。
+
+之前如果直接打开网页超时或被反爬，StageWeaver 会退回 search API 摘要。这能提高可用性，但很多时候只有搜索摘要，不是完整页面证据，executor 容易继续换 query 查找更确定的证据。
+
+当前改动是增加一个公网远程 Crawl API：把直接打开网页和内容抽取放到云服务器执行，StageWeaver 只调用 API。
+
+2. 当前架构
+-----------
+
+StageWeaver 服务器：
+
+- 代码路径：`/data/xiezhen/stageweaver`
+- 调用入口：`server/ai_crawl.py`
+- 工具函数：`crawl_extract(url, query, max_tokens=...)`
+
+远程 Crawl API：
+
+- API 地址：`http://119.45.1.210/crawl_extract`
+- 健康检查：`http://119.45.1.210/health`
+- 部署路径：云服务器 `/home/ubuntu/search_api`
+- 服务方式：Docker Compose，`api` 服务对外暴露 80 端口
+- 鉴权方式：API Key，可通过 `x-api-key` header、query 参数 `api_key` 或 JSON 字段 `api_key` 传入
+
+3. StageWeaver .env 配置
+------------------------
+
+StageWeaver 侧需要以下配置：
+
+```bash
+REMOTE_CRAWL_EXTRACT_URL=http://119.45.1.210/crawl_extract
+REMOTE_CRAWL_EXTRACT_API_KEY=你的真实_API_KEY
+REMOTE_CRAWL_EXTRACT_TIMEOUT_SEC=60
+REMOTE_CRAWL_EXTRACT_BYPASS_PROXY=1
+```
+
+不要把真实 API Key 写入 README、说明文档或 git。
+
+字段说明：
+
+- `REMOTE_CRAWL_EXTRACT_URL`：远程 crawl API 地址。
+- `REMOTE_CRAWL_EXTRACT_API_KEY`：远程 API Key。可以与搜索 API 的 key 使用同一个值。
+- `REMOTE_CRAWL_EXTRACT_TIMEOUT_SEC`：等待远程 crawl API 的超时时间，当前建议 60 秒。
+- `REMOTE_CRAWL_EXTRACT_BYPASS_PROXY`：设为 1 时，StageWeaver 调用远程 API 会绕过本机代理环境变量。
+
+4. 远程 API 行为
+----------------
+
+请求方式一：GET
+
+```bash
+curl -sG "http://119.45.1.210/crawl_extract" \
+  --data-urlencode "url=https://en.wikipedia.org/wiki/OpenAI" \
+  --data-urlencode "query=When was OpenAI founded and who founded it?" \
+  --data-urlencode "api_key=你的真实_API_KEY"
+```
+
+请求方式二：POST
+
+```bash
+curl -s "http://119.45.1.210/crawl_extract" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: 你的真实_API_KEY" \
+  -d '{
+    "url": "https://en.wikipedia.org/wiki/OpenAI",
+    "query": "When was OpenAI founded and who founded it?",
+    "max_chars": 20000
+  }'
+```
+
+返回字段示例：
+
+```json
+{
+  "status": "ok",
+  "source": "direct",
+  "url": "https://en.wikipedia.org/wiki/OpenAI",
+  "final_url": "https://en.wikipedia.org/wiki/OpenAI",
+  "status_code": 200,
+  "content_type": "text/html; charset=UTF-8",
+  "title": "OpenAI - Wikipedia",
+  "query": "When was OpenAI founded and who founded it?",
+  "markdown": "...",
+  "chars": 12087,
+  "chunks_found": 620,
+  "chunks_returned": 70,
+  "elapsed_sec": 1.02
+}
+```
+
+`source` 字段含义：
+
+- `direct`：远程服务成功直接打开目标 URL，并从页面 HTML 抽取正文。
+- `search_fallback`：目标 URL 直接抓取失败，远程服务退回云服务器上的 SearXNG 搜索摘要。
+
+5. StageWeaver fallback 顺序
+----------------------------
+
+`server/ai_crawl.py` 的顺序是：
+
+1. 如果配置了 `REMOTE_CRAWL_EXTRACT_URL`，优先调用远程 Crawl API。
+2. 如果远程返回 direct 内容，使用远程页面 Markdown。
+3. 如果远程返回 search_fallback，使用远程搜索摘要 Markdown。
+4. 如果远程 API 调用失败，并且 `CRAWL_SEARCH_FALLBACK=1`，退回 StageWeaver 本地 search fallback。
+5. 最后由 `CRAWL_EXTRACT_MODEL` 对 Markdown 做答案抽取。
+
+6. 为什么需要远程 crawl API
+---------------------------
+
+只依赖 search API fallback 时，StageWeaver 经常只能拿到搜索摘要，而不是完整网页证据。对于需要精确引用、日期、作者、表格、长页面上下文的问题，搜索摘要不够稳定，executor 可能反复搜索，增加步数和超时概率。
+
+远程 crawl API 的价值是：
+
+- 在有公网访问能力的云服务器上直接打开目标网页。
+- 尽量返回页面级 Markdown，而不是只有搜索结果摘要。
+- 直接抓取失败时仍保留搜索 fallback。
+- StageWeaver 实验服务器不需要自己解决外网连通性和代理问题。
+
+7. 安全限制
+-----------
+
+远程 crawl API 内置基本 SSRF 防护：
+
+- 只允许 `http` 和 `https`。
+- 拒绝 localhost、127.0.0.1、0.0.0.0。
+- 拒绝明确的内网 IP。
+- 检查重定向后的目标地址，避免跳转到内网。
+
+因此这个 API 面向公网网页抓取，不用于访问内网管理页面、metadata endpoint 或本机服务。
+
+8. 常用检查命令
+---------------
+
+检查远程服务：
+
+```bash
+curl -s http://119.45.1.210/health
+```
+
+检查 StageWeaver 是否配置了远程 crawl：
+
+```bash
+cd /data/xiezhen/stageweaver
+/data/xiezhen/stageweaver/.venv-cu126/bin/python - <<'PY'
+from server import ai_crawl
+print("REMOTE_CRAWL_EXTRACT_URL =", ai_crawl.REMOTE_CRAWL_EXTRACT_URL)
+print("REMOTE_CRAWL_EXTRACT_TIMEOUT_SEC =", ai_crawl.REMOTE_CRAWL_EXTRACT_TIMEOUT_SEC)
+print("has_api_key =", bool(ai_crawl.REMOTE_CRAWL_EXTRACT_API_KEY))
+PY
+```
+
+检查端到端抽取：
+
+```bash
+cd /data/xiezhen/stageweaver
+/data/xiezhen/stageweaver/.venv-cu126/bin/python - <<'PY'
+import asyncio
+from server.ai_crawl import crawl_extract
+
+async def main():
+    text = await crawl_extract(
+        "https://en.wikipedia.org/wiki/OpenAI",
+        "When was OpenAI founded and who founded it?",
+        max_tokens=500,
+    )
+    print(text[:1000])
+
+asyncio.run(main())
+PY
+```
+
+正常日志会出现类似：
+
+```text
+Using remote crawl API: https://en.wikipedia.org/wiki/OpenAI
+Remote crawl markdown length: ... characters; source=direct
+```
+
+9. 已验证结果
+-------------
+
+已验证从 StageWeaver 服务器调用 `http://119.45.1.210/crawl_extract` 可以直接抓取 Wikipedia 页面，并返回 `source=direct` 的页面 Markdown。随后 StageWeaver 本地抽取模型可以从 Markdown 中抽取 OpenAI 的成立时间和创始人信息。
+

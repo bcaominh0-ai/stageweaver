@@ -73,7 +73,7 @@ EXEC_SYSTEM_PROMPT = (
 )
 
 # Maximum context length for token management
-MAX_CTX = 175000
+MAX_CTX = int(os.getenv("STAGEWEAVER_MAX_CTX_TOKENS", "175000"))
 # Default executor model
 EXE_MODEL = "qwen3-8b"
 DEFAULT_LOCAL_MODEL_PATH = os.getenv("LOCAL_MODEL_PATH", "/wufeiyang/mem/M2/model/Qwen3-4B-Instruct-2507")
@@ -296,12 +296,26 @@ class LocalModelRuntime:
             "float32": torch.float32,
         }
         dtype = dtype_map.get(dtype_name, torch.bfloat16)
-        device_map: str | dict[str, int] = "cuda" if torch.cuda.is_available() else "cpu"
+        device_map_env = os.getenv("LOCAL_DEVICE_MAP", "").strip().lower()
+        if device_map_env:
+            device_map: str | dict[str, int] = device_map_env
+        else:
+            device_map = "cuda" if torch.cuda.is_available() else "cpu"
+        load_kwargs: Dict[str, Any] = {
+            "dtype": dtype,
+            "device_map": device_map,
+            "trust_remote_code": True,
+            "low_cpu_mem_usage": True,
+        }
+        if device_map == "auto" and torch.cuda.is_available():
+            max_memory_gib = os.getenv("LOCAL_MAX_MEMORY_GIB", "").strip()
+            if max_memory_gib:
+                load_kwargs["max_memory"] = {
+                    i: f"{max_memory_gib}GiB" for i in range(torch.cuda.device_count())
+                }
         self.model = AutoModelForCausalLM.from_pretrained(
             model_ref,
-            dtype=dtype,
-            device_map=device_map,
-            trust_remote_code=True,
+            **load_kwargs,
         )
         self.hidden_size = int(self.model.config.hidden_size)
         self.device = self.model.get_input_embeddings().weight.device
@@ -730,7 +744,8 @@ class HierarchicalClient:
     MAX_CYCLES = int(os.getenv("STAGEWEAVER_MAX_CYCLES", "3"))
     MAX_EXECUTOR_STEPS_PER_TASK = int(os.getenv("STAGEWEAVER_MAX_EXECUTOR_STEPS_PER_TASK", "48"))
     TOOL_CALL_TIMEOUT_SEC = float(os.getenv("STAGEWEAVER_TOOL_CALL_TIMEOUT_SEC", "75"))
-    TRACE_RESULT_CHARS = 4000
+    TRACE_RESULT_CHARS = int(os.getenv("STAGEWEAVER_TRACE_RESULT_CHARS", "4000"))
+    TOOL_MESSAGE_CHARS = int(os.getenv("STAGEWEAVER_TOOL_MESSAGE_CHARS", "0"))
 
     def __init__(
         self,
@@ -793,6 +808,13 @@ class HierarchicalClient:
             return text
         omitted = len(text) - self.TRACE_RESULT_CHARS
         return text[: self.TRACE_RESULT_CHARS] + f"\n...[truncated {omitted} chars]"
+
+    def _tool_message_content(self, text: str) -> str:
+        limit = max(0, int(self.TOOL_MESSAGE_CHARS))
+        if limit <= 0 or len(text) <= limit:
+            return text
+        omitted = len(text) - limit
+        return text[:limit].rstrip() + f"\n...[tool result truncated {omitted} chars]"
 
     def _resolve_tool_name(self, requested: str) -> str:
         if requested in self.sessions:
@@ -1443,7 +1465,7 @@ class HierarchicalClient:
                                     "role": "tool",
                                     "tool_call_id": call.get("id", str(uuid.uuid4())),
                                     "name": resolved,
-                                    "content": guarded_result,
+                                    "content": self._tool_message_content(guarded_result),
                                 },
                             ])
                             continue
@@ -1481,7 +1503,7 @@ class HierarchicalClient:
                                 "role": "tool",
                                 "tool_call_id": call.get("id", str(uuid.uuid4())),
                                 "name": resolved,
-                                "content": result_text
+                                "content": self._tool_message_content(result_text)
                             },
                         ])
 
